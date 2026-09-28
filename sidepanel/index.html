@@ -1,116 +1,175 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WebAuto Agent</title>
+  <title>WebAuto Harness</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div class="app-container">
-    <!-- 头部区域 -->
-    <header class="app-header">
-      <div class="logo-area">
-        <div class="logo-icon">A</div>
-        <div class="title-group">
-          <h1>WebAuto Agent</h1>
-          <span class="subtitle">智能网页自动化副驾驶</span>
+  <div class="harness-layout">
+    <!-- 顶栏导航 -->
+    <header class="harness-header">
+      <div class="header-left">
+        <div class="brand">
+          <span class="brand-title">WebAuto</span>
+          <span class="brand-tag">Harness</span>
+        </div>
+        <div id="status-badge" class="status-indicator status-idle" title="当前状态">
+          <span class="indicator-dot"></span>
+          <span class="indicator-text">就绪</span>
         </div>
       </div>
-      <div class="header-actions">
-        <div id="status-badge" class="status-pill status-idle">
-          <span class="dot"></span>
-          <span class="text">就绪</span>
-        </div>
-        <button id="toggle-settings-btn" class="icon-btn" title="API 配置">
-          ⚙️
+
+      <div class="header-right">
+        <span id="step-badge" class="step-badge hidden">第 0 / 0 步</span>
+        <button id="theme-toggle-btn" class="icon-button" title="切换明暗主题" aria-label="切换主题">
+          <!-- 太阳图标（亮色模式显示） -->
+          <svg class="theme-icon sun-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="5"></circle>
+            <line x1="12" y1="1" x2="12" y2="3"></line>
+            <line x1="12" y1="21" x2="12" y2="23"></line>
+            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+            <line x1="1" y1="12" x2="3" y2="12"></line>
+            <line x1="21" y1="12" x2="23" y2="12"></line>
+            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+          </svg>
+          <!-- 月亮图标（暗色模式显示） -->
+          <svg class="theme-icon moon-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+          </svg>
+        </button>
+
+        <button id="clear-history-btn" class="icon-button" title="清空对话" aria-label="清空对话">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"></polyline>
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+          </svg>
+        </button>
+
+        <button id="settings-toggle-btn" class="icon-button" title="设置" aria-label="配置">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
         </button>
       </div>
     </header>
 
-    <!-- 可折叠 API 配置面板 -->
-    <section id="settings-panel" class="settings-drawer collapsed">
-      <div class="drawer-header">
-        <h3>接口配置 (兼容 OpenAI 规范)</h3>
-        <button id="close-settings-btn" class="close-btn">&times;</button>
+    <!-- 可折叠设置面板 -->
+    <div id="settings-panel" class="settings-drawer collapsed">
+      <div class="settings-header">
+        <span class="settings-title">模型与接口配置</span>
+        <button id="settings-close-btn" class="text-button">完成</button>
       </div>
+      <div class="settings-body">
+        <div class="form-item">
+          <label for="provider-select">服务商预设</label>
+          <select id="provider-select">
+            <option value="deepseek">DeepSeek 官方</option>
+            <option value="openai">OpenAI 官方</option>
+            <option value="siliconflow">硅基流动 SiliconFlow</option>
+            <option value="ollama">Ollama 本地运行</option>
+            <option value="custom">自定义服务商</option>
+          </select>
+        </div>
 
-      <div class="form-group">
-        <label for="provider-select">服务商预设</label>
-        <select id="provider-select">
-          <option value="deepseek">DeepSeek 官方 (推荐, 性价比最高)</option>
-          <option value="openai">OpenAI 官方 (GPT-4o / GPT-4o-mini)</option>
-          <option value="siliconflow">硅基流动 SiliconFlow (Qwen/DeepSeek)</option>
-          <option value="ollama">Ollama (本地运行)</option>
-          <option value="custom">自定义 (第三方转发 / 中转站)</option>
-        </select>
+        <div class="form-item">
+          <label for="base-url-input">API Base URL</label>
+          <input type="text" id="base-url-input" spellcheck="false" placeholder="https://api.deepseek.com/v1" />
+        </div>
+
+        <div class="form-item">
+          <label for="api-key-input">API Key</label>
+          <div class="input-with-button">
+            <input type="password" id="api-key-input" spellcheck="false" placeholder="sk-..." />
+            <button type="button" id="toggle-key-btn" class="sub-button">查看</button>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-item flex-2">
+            <label for="model-input">模型名称</label>
+            <input type="text" id="model-input" spellcheck="false" placeholder="deepseek-chat" />
+          </div>
+          <div class="form-item flex-1">
+            <label for="max-steps-input">步数上限</label>
+            <input type="number" id="max-steps-input" min="1" max="50" value="20" />
+          </div>
+        </div>
+
+        <div class="form-item-check">
+          <label class="checkbox-label">
+            <input type="checkbox" id="vision-toggle">
+            <span>启用视口截图多模态辅助</span>
+          </label>
+        </div>
+
+        <div class="form-item-check">
+          <label class="checkbox-label">
+            <input type="checkbox" id="cdp-toggle">
+            <span>启用 CDP 硬件真实事件输入</span>
+          </label>
+        </div>
+
+        <button id="save-settings-btn" class="solid-button full-width">保存设置</button>
       </div>
+    </div>
 
-      <div class="form-group">
-        <label for="base-url-input">API Base URL</label>
-        <input type="text" id="base-url-input" placeholder="https://api.deepseek.com/v1" />
+    <!-- 中部消息流主体 -->
+    <main id="conversation-stream" class="conversation-stream">
+      <div id="empty-state" class="empty-state">
+        <div class="empty-icon-wrapper">
+          <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+            <line x1="8" y1="21" x2="16" y2="21"></line>
+            <line x1="12" y1="17" x2="12" y2="21"></line>
+          </svg>
+        </div>
+        <p class="empty-title">网页自动化就绪</p>
+        <p class="empty-subtitle">在下方输入指令，助手将自主感知网页并执行点击、输入与导航</p>
       </div>
+    </main>
 
-      <div class="form-group">
-        <label for="api-key-input">API Key</label>
-        <div class="password-wrapper">
-          <input type="password" id="api-key-input" placeholder="sk-..." />
-          <button type="button" id="toggle-key-visibility" class="mini-btn">显示</button>
+    <!-- 底部固定输入栏 -->
+    <footer class="harness-footer">
+      <div class="input-card">
+        <textarea id="task-input" rows="1" placeholder="输入自动化目标或操作需求... (Enter 发送, Shift+Enter 换行)"></textarea>
+
+        <div class="input-actions-bar">
+          <div class="action-left-group">
+            <button id="pause-resume-btn" class="action-btn" title="暂停/恢复执行" disabled>
+              <svg id="pause-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="6" y="4" width="4" height="16"></rect>
+                <rect x="14" y="4" width="4" height="16"></rect>
+              </svg>
+              <svg id="resume-icon" class="hidden" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polygon points="5 3 19 12 5 21 5 3"></polygon>
+              </svg>
+              <span id="pause-btn-text">暂停</span>
+            </button>
+
+            <button id="stop-btn" class="action-btn danger" title="停止执行" disabled>
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="4" y="4" width="16" height="16" rx="2"></rect>
+              </svg>
+              <span>停止</span>
+            </button>
+          </div>
+
+          <div class="action-right-group">
+            <button id="send-btn" class="send-button" title="开始执行">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
-
-      <div class="form-row">
-        <div class="form-group half">
-          <label for="model-input">模型名称 (Model)</label>
-          <input type="text" id="model-input" placeholder="deepseek-chat" />
-        </div>
-        <div class="form-group half">
-          <label for="max-steps-input">步数上限</label>
-          <input type="number" id="max-steps-input" value="15" min="1" max="50" />
-        </div>
-      </div>
-
-      <div class="drawer-actions">
-        <button id="save-settings-btn" class="btn primary-btn">保存配置</button>
-      </div>
-    </section>
-
-    <!-- 任务输入与控制区 -->
-    <section class="task-input-section">
-      <div class="quick-prompts">
-        <span class="prompt-chip" data-prompt="在百度搜索“今日热点”并打开第一条搜索结果">百度搜索</span>
-        <span class="prompt-chip" data-prompt="向下滚动网页浏览更多内容，并总结核心要点">滚动并总结</span>
-        <span class="prompt-chip" data-prompt="帮我找到页面底部的关于我们链接并点击">关于我们</span>
-      </div>
-
-      <div class="input-wrapper">
-        <textarea id="task-goal-input" rows="3" placeholder="输入你想让 Agent 自动执行的目标，例如：在当前页面搜索框输入 Python 教程并点击搜索..."></textarea>
-      </div>
-
-      <div class="control-bar">
-        <button id="start-task-btn" class="btn primary-btn action-start">
-          <span class="icon">🚀</span> 开始执行
-        </button>
-        <button id="stop-task-btn" class="btn danger-btn action-stop" disabled>
-          <span class="icon">🛑</span> 停止任务
-        </button>
-      </div>
-    </section>
-
-    <!-- 执行状态与步骤时间轴 -->
-    <section class="timeline-section">
-      <div class="timeline-header">
-        <h2>执行动态与步骤记录</h2>
-        <span id="step-counter" class="step-pill">第 0 / 0 步</span>
-      </div>
-
-      <div id="logs-container" class="logs-stream">
-        <div class="empty-state">
-          <div class="empty-icon">🤖</div>
-          <p>输入任务并点击“开始执行”，Agent 将自动感知网页、决策并模拟交互。</p>
-        </div>
-      </div>
-    </section>
+    </footer>
   </div>
 
   <script type="module" src="sidepanel.js"></script>

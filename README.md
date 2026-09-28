@@ -1,104 +1,96 @@
 # WebAuto Agent - 浏览器智能自动化助手
 
-一款基于 **OpenAI 兼容接口规范** 的 Chrome 自动化扩展程序（Browser AI Agent）。
-它将大模型的推理决策与浏览器内部原生 DOM 深度结合，在用户日常浏览的真实网页环境中自主完成**元素识别、点击、文本输入、滚动浏览与流程编排**。
+WebAuto Agent 是一款基于 **Chrome Extension Manifest V3** 与 **OpenAI 兼容接口标准** 的现代化浏览器自动化扩展（Browser Agent Harness）。它将大语言模型的推理决策能力与真实的浏览器环境相结合，在当前登录会话中自主完成元素感知、推理决策、拟人交互与长流程任务编排。
 
 ---
 
-## 🌟 核心特性与工程优势
+## 架构特性与工程实现
 
-1. **原生扩展驱动（无需 Playwright / Python 复杂依赖）**
-   * 直接运行在用户真实的 Chrome 浏览器内部。
-   * **完美复用当前登录态**：知乎、GitHub、淘宝、企业内网系统等无需重新扫码或导出 Cookie，直接以当前账号身份自动化操作。
-   * **天然反爬虫防御**：使用真实浏览器的环境指纹与网络上下文，避免被识别为无头机器人。
+1. **后台独立常驻引擎 (Background Service Worker Runner)**
+   * 核心调度状态机与自动化执行循环全面下沉至后台 Service Worker，与侧边栏 UI 完全解耦。
+   * 支持任务断线重连：在任务运行期间，用户即便关闭侧边栏或切换窗口，自动化流程依然在后台平稳推进，重新打开侧边栏即可即时恢复现场日志流。
+   * 支持完整的任务暂停（Pause）、恢复（Resume）与强行终止（Stop）生命周期控制。
 
-2. **标准化 OpenAI 接口兼容**
-   * 支持通过标准 `tools` (Function Calling) 驱动决策。
-   * 原生内置服务商预设：
-     * **DeepSeek 官方**（超高性价比推荐）
-     * **OpenAI 官方**（GPT-4o / GPT-4o-mini）
-     * **硅基流动 (SiliconFlow)**（Qwen2.5 / DeepSeek 等开源大模型）
-     * **Ollama 本地大模型**（无需联网，隐私优先）
-     * **自定义 API 代理 / 中转站**
+2. **高精度视口感知与 Set-of-Marks 视觉角标**
+   * **深度 DOM 穿透**：递归穿透 open 模式的 Shadow DOM 与同源 iframe，识别现代前端自定义组件与微前端应用中的交互元素。
+   * **真实视口可见性计算**：结合 `isClippedByOverflow` 检测父级滚动容器裁剪，并通过 `elementFromPoint` 采样中心与边缘点判定层级遮挡，过滤被弹窗与浮动遮罩挡住的无效元素。
+   * **防脱节固定角标**：标注层采用固定视口层并在页面滚动与尺寸变化时通过 `requestAnimationFrame` 动态重贴合，杜绝角标错位与漂移。
+   * **可选多模态增强 (Vision)**：支持在生成文本 DOM 列表的同时捕获视口实时截图并以 Base64 传递给支持多模态的大模型，形成真正的图文双重视觉感知闭环。
 
-3. **智能闭环感知系统（Set-of-Marks 视觉角标）**
-   * 自动遍历当前视口内可见的可交互元素（按钮、链接、输入框、下拉框等）。
-   * 实时为元素叠加高对比度数字方括号角标（如 `[1]`, `[2]`），便于模型精确指向，杜绝误触。
+3. **双重事件派发体系与受控组件适配**
+   * **CDP 物理级事件支持**：支持启用 Chrome DevTools Protocol (`chrome.debugger`) 派发系统级硬件输入事件（`isTrusted === true`），适配对安全性与真实用户事件有严格校验的站点。
+   * **标准原生降级与富文本支持**：在未开启 CDP 时，自动通过标准的 `beforeinput`（`InputEvent`）、原型链 setter 描述符劫持及选区 API 模拟输入，适配 React/Vue 受控表单与现代富文本编辑器（如 Slate, Draft.js, Quill）。
 
-4. **深度兼容现代前端响应式框架**
-   * 针对 React、Vue、Angular 的受控组件，通过重写原生原型链属性描述符派发合成事件，确保输入内容能够 100% 触发前端状态更新与表单提交。
+4. **简约现代 Harness 交互界面**
+   * **双色主题系统**：原生支持明亮（Light）与深色（Dark）主题平滑切换，默认跟随系统偏好并自动持久化。
+   * **流式直接排版**：模型思考链（Reasoning）与回复正文采用直接输出流式排版，拒绝笨重的大外框；用户消息独立气泡框显，工具调用以结构化卡片（展示参数与执行结果反馈）框入时间流。
+   * **置底自适应输入栏**：输入框固定置底，支持高度自适应扩展与快捷键操作（Enter 直接发送，Shift+Enter 换行）。
 
-5. **常驻 Side Panel（侧边栏）沉浸式交互**
-   * 不会因为网页切换或失焦而中断关闭。
-   * 实时展示模型**思考链路（Chain of Thought）**、**执行动作参数**及**每一步的耗时与状态**。
+5. **全流程流式输出与防空转机制**
+   * 基于 Server-Sent Events (SSE) 流式解析服务端数据，实时呈现模型的深度思考（Thinking/Reasoning）与执行动作。
+   * 内置空转阻断保护：当模型未下发有效工具指令时，自动插入系统强化提示并重试，不扣减用户执行步数。
 
 ---
 
-## 🚀 极速安装与使用指南
+## 极速安装与使用指南
 
-整个插件采用零编译（Zero-Build）架构，无需运行 `npm build`，即下即用：
+本项目采用原生零构建（Zero-Build）架构，无需运行编译命令即可直接运行：
 
-### 第一步：在 Chrome 中加载插件
-1. 打开 Chrome 浏览器，在地址栏输入并回车：
+### 1. 在 Chrome 中加载扩展
+1. 打开 Chrome 浏览器，在地址栏输入：
    ```text
    chrome://extensions
    ```
-2. 在页面右上角打开 **“开发者模式” (Developer mode)** 开关。
-3. 点击左上角出现的 **“加载已解压的扩展程序” (Load unpacked)** 按钮。
-4. 在弹出的文件选择器中，选中本项目根目录：
+2. 开启右上角的 **“开发者模式” (Developer mode)** 开关。
+3. 点击左上角的 **“加载已解压的扩展程序” (Load unpacked)**。
+4. 在文件选择器中选中本项目根目录：
    ```text
-   d:\Projects\Web
+   d:\Projects\WebPilot
    ```
-5. 加载完成后，工具栏中将出现 **WebAuto Agent** 图标。
+5. 加载完成后，浏览器工具栏将出现 **WebAuto** 图标。
+
+### 2. 配置与启动自动化
+1. 在浏览器右上角的扩展列表中，将 **WebAuto** 固定到工具栏。
+2. 打开需要执行自动化操作的网页（如知乎、GitHub、管理后台等）。
+3. 点击扩展图标唤出常驻侧边栏。
+4. 点击顶栏右上角设置图标展开配置抽屉：
+   * 选择模型服务商（预设支持 DeepSeek、OpenAI、SiliconFlow、Ollama 或自定义代理）。
+   * 填写相应的 **API Key** 与模型名称。
+   * 根据需求勾选“启用视口截图多模态辅助”或“启用 CDP 硬件真实事件输入”。
+   * 点击 **保存设置**。
+5. 在底部输入栏中输入任务目标（如：“在搜索框中输入关键字并点击搜索”），按回车或点击发送按钮即可启动任务。
 
 ---
 
-### 第二步：配置 API 与启动任务
-1. 在浏览器右上角的扩展程序列表中，点击固定（Pin）**WebAuto Agent**。
-2. 打开任意你想要操作的网页（例如百度、知乎、GitHub 等）。
-3. 点击插件图标，浏览器右侧将滑出 **WebAuto Agent 侧边栏**。
-4. 点击侧边栏右上角的 **⚙️ (设置)** 图标：
-   * 选择你使用的服务商（如 DeepSeek）。
-   * 填入你的 **API Key**（如 `sk-...`）。
-   * 点击 **“保存配置”**。
-5. 在输入框中输入你想要执行的任务，例如：
-   * *“在当前搜索框中输入 Python 并点击搜索”*
-   * *“向下滚动浏览页面，找到关于我们并点击”*
-6. 点击 **🚀 开始执行**，即可实时观看 Agent 自动分析与操作网页！
-
----
-
-## 🛠️ 项目目录结构
+## 项目工程结构
 
 ```text
-d:\Projects\Web\
-├── manifest.json              # Chrome Manifest V3 扩展配置文件
-├── icons/                     # 插件各分辨率图标资源 (16x16, 48x48, 128x128)
+d:\Projects\WebPilot\
+├── manifest.json              # Chrome Extension Manifest V3 配置文件
+├── icons/                     # 扩展 16/48/128 图标资源
 ├── background/
-│   └── service-worker.js      # 扩展后台服务（负责侧边栏呼出与扩展生命周期）
+│   ├── service-worker.js      # 后台服务常驻线程（长连接会话与单例生命周期管理）
+│   └── agent-runner.js        # 自动化引擎调度核心（感知、推理、执行、状态校验与暂停恢复）
 ├── sidepanel/
-│   ├── index.html             # 侧边栏控制面板主结构
-│   ├── style.css              # 现代科技感深色主题样式与时间轴
-│   ├── sidepanel.js           # 侧边栏交互逻辑与配置持久化
-│   └── agent.js               # 核心控制闭环（感知 -> 推理 -> 执行 -> 验证）
+│   ├── index.html             # 简约 Harness 侧边栏界面结构
+│   ├── style.css              # 明暗主题、Harness 消息流与动效样式
+│   └── sidepanel.js           # 侧边栏交互逻辑、主题切换与后台通信控制器
 ├── content/
-│   ├── content-script.js      # 网页注入脚本（DOM 遍历提取、角标标注与动作模拟）
-│   └── overlay.css            # 网页角标高亮样式
+│   ├── content-script.js      # 页面注入脚本（单例防重、ShadowDOM 穿透、遮挡判定与输入模拟）
+│   └── overlay.css            # 固定视口高亮标注层样式
 └── lib/
-    └── openai.js              # OpenAI 兼容客户端与自动化工具集定义 (Function Calling)
+    └── openai.js              # OpenAI 规范客户端（流式 SSE、思考链解析与多模态组装）
 ```
 
 ---
 
-## 📋 自动化工具定义 (Function Calling Schema)
-
-Agent 支持下发以下标准工具与网页交互：
+## 自动化工具定义 (Tool Calling Schema)
 
 | 工具名称 | 关键参数 | 功能说明 |
 | :--- | :--- | :--- |
-| `click_element` | `index: number` | 点击对应编号的按钮、链接或交互元素 |
-| `input_text` | `index: number, text: string, press_enter?: boolean` | 在输入框中填写文本，并可选择是否自动回车提交 |
-| `scroll_page` | `direction: "up" \| "down", amount?: number` | 控制页面上下平滑滚动以获取视口外的内容 |
-| `navigate_to` | `url: string` | 跳转至指定网址并等待加载完成 |
-| `wait_seconds` | `seconds: number` | 等待动态渲染或数据加载 |
-| `finish_task` | `summary: string` | 任务成功完成，输出执行结果总结 |
+| `click_element` | `index: number` | 点击对应编号的按钮、链接或交互元素，支持同步 CDP 物理点击 |
+| `input_text` | `index: number, text: string, press_enter?: boolean` | 在目标输入框中填写文本，并可选择是否自动提交回车 |
+| `scroll_page` | `direction: "up" \| "down", amount?: number` | 控制页面视口上下平滑滚动以感知更多内容 |
+| `navigate_to` | `url: string` | 跳转至指定 HTTP/HTTPS 网址并等待页面就绪 |
+| `wait_seconds` | `seconds: number` | 等待动态页面数据加载 |
+| `finish_task` | `summary: string` | 任务目标达成时由模型主动调用，输出完整结果总结 |

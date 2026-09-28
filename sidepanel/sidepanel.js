@@ -1,11 +1,8 @@
 /**
- * 侧边栏用户交互控制器
- * 处理视图事件、配置存储持久化以及与 Agent 核心的通信联动
+ * 侧边栏用户交互与通信控制器
+ * 维护后台长连接会话、明暗主题切换、置底输入框自适应以及结构化流式消息渲染
  */
 
-import { BrowserAgent } from './agent.js';
-
-// 常见 API 服务商预设参数
 const PROVIDER_PRESETS = {
   deepseek: {
     baseUrl: 'https://api.deepseek.com/v1',
@@ -29,56 +26,89 @@ const PROVIDER_PRESETS = {
   }
 };
 
-let currentAgent = null;
-
 document.addEventListener('DOMContentLoaded', async () => {
   // DOM 元素引用
+  const streamContainer = document.getElementById('conversation-stream');
+  const emptyState = document.getElementById('empty-state');
   const statusBadge = document.getElementById('status-badge');
-  const toggleSettingsBtn = document.getElementById('toggle-settings-btn');
-  const closeSettingsBtn = document.getElementById('close-settings-btn');
+  const statusText = statusBadge.querySelector('.indicator-text');
+  const stepBadge = document.getElementById('step-badge');
+
+  const themeToggleBtn = document.getElementById('theme-toggle-btn');
+  const clearHistoryBtn = document.getElementById('clear-history-btn');
+  const settingsToggleBtn = document.getElementById('settings-toggle-btn');
+  const settingsCloseBtn = document.getElementById('settings-close-btn');
   const settingsPanel = document.getElementById('settings-panel');
+
   const providerSelect = document.getElementById('provider-select');
   const baseUrlInput = document.getElementById('base-url-input');
   const apiKeyInput = document.getElementById('api-key-input');
-  const toggleKeyVisibilityBtn = document.getElementById('toggle-key-visibility');
+  const toggleKeyBtn = document.getElementById('toggle-key-btn');
   const modelInput = document.getElementById('model-input');
   const maxStepsInput = document.getElementById('max-steps-input');
+  const visionToggle = document.getElementById('vision-toggle');
+  const cdpToggle = document.getElementById('cdp-toggle');
   const saveSettingsBtn = document.getElementById('save-settings-btn');
 
-  const taskGoalInput = document.getElementById('task-goal-input');
-  const startTaskBtn = document.getElementById('start-task-btn');
-  const stopTaskBtn = document.getElementById('stop-task-btn');
-  const stepCounter = document.getElementById('step-counter');
-  const logsContainer = document.getElementById('logs-container');
-  const promptChips = document.querySelectorAll('.prompt-chip');
+  const taskInput = document.getElementById('task-input');
+  const sendBtn = document.getElementById('send-btn');
+  const pauseResumeBtn = document.getElementById('pause-resume-btn');
+  const pauseIcon = document.getElementById('pause-icon');
+  const resumeIcon = document.getElementById('resume-icon');
+  const pauseBtnText = document.getElementById('pause-btn-text');
+  const stopBtn = document.getElementById('stop-btn');
 
-  // 读取已保存的配置
-  const stored = await chrome.storage.local.get(['apiConfig', 'maxSteps']);
+  // 当前活跃的模型消息流节点与工具节点缓存
+  let currentModelNode = null;
+  let currentThoughtBox = null;
+  let currentDirectTextBox = null;
+  const activeToolCards = new Map();
+
+  let currentStatus = 'idle';
+
+  // 1. 主题初始化与切换
+  const storedTheme = await chrome.storage.local.get(['theme']);
+  let activeTheme = storedTheme.theme;
+  if (!activeTheme) {
+    activeTheme = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  }
+  document.documentElement.setAttribute('data-theme', activeTheme);
+
+  themeToggleBtn.addEventListener('click', async () => {
+    activeTheme = activeTheme === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', activeTheme);
+    await chrome.storage.local.set({ theme: activeTheme });
+  });
+
+  // 2. 读取已保存设置
+  const stored = await chrome.storage.local.get(['apiConfig', 'maxSteps', 'enableVision', 'enableCdp']);
   const savedConfig = stored.apiConfig || {
     provider: 'deepseek',
     baseUrl: PROVIDER_PRESETS.deepseek.baseUrl,
     apiKey: '',
     model: PROVIDER_PRESETS.deepseek.model
   };
-  const savedMaxSteps = stored.maxSteps || 15;
+  const savedMaxSteps = stored.maxSteps || 20;
+  const savedVision = stored.enableVision || false;
+  const savedCdp = stored.enableCdp || false;
 
-  // 初始化设置表单视图
   providerSelect.value = savedConfig.provider || 'deepseek';
   baseUrlInput.value = savedConfig.baseUrl || '';
   apiKeyInput.value = savedConfig.apiKey || '';
   modelInput.value = savedConfig.model || '';
   maxStepsInput.value = savedMaxSteps;
+  visionToggle.checked = savedVision;
+  cdpToggle.checked = savedCdp;
 
-  // 展开/折叠设置面板
-  toggleSettingsBtn.addEventListener('click', () => {
+  // 抽屉展开/折叠
+  settingsToggleBtn.addEventListener('click', () => {
     settingsPanel.classList.toggle('collapsed');
   });
 
-  closeSettingsBtn.addEventListener('click', () => {
+  settingsCloseBtn.addEventListener('click', () => {
     settingsPanel.classList.add('collapsed');
   });
 
-  // 服务商预设切换联动
   providerSelect.addEventListener('change', (e) => {
     const preset = PROVIDER_PRESETS[e.target.value];
     if (preset) {
@@ -87,18 +117,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
-  // 密码显示/隐藏切换
-  toggleKeyVisibilityBtn.addEventListener('click', () => {
+  toggleKeyBtn.addEventListener('click', () => {
     if (apiKeyInput.type === 'password') {
       apiKeyInput.type = 'text';
-      toggleKeyVisibilityBtn.textContent = '隐藏';
+      toggleKeyBtn.textContent = '隐藏';
     } else {
       apiKeyInput.type = 'password';
-      toggleKeyVisibilityBtn.textContent = '显示';
+      toggleKeyBtn.textContent = '查看';
     }
   });
 
-  // 保存设置到 Chrome 本地存储
   saveSettingsBtn.addEventListener('click', async () => {
     const config = {
       provider: providerSelect.value,
@@ -106,154 +134,369 @@ document.addEventListener('DOMContentLoaded', async () => {
       apiKey: apiKeyInput.value.trim(),
       model: modelInput.value.trim()
     };
-    const maxSteps = parseInt(maxStepsInput.value, 10) || 15;
+    const maxSteps = parseInt(maxStepsInput.value, 10) || 20;
+    const enableVision = visionToggle.checked;
+    const enableCdp = cdpToggle.checked;
 
-    await chrome.storage.local.set({ apiConfig: config, maxSteps });
-
-    if (currentAgent) {
-      currentAgent.updateConfig(config);
-      currentAgent.maxSteps = maxSteps;
-    }
+    await chrome.storage.local.set({
+      apiConfig: config,
+      maxSteps,
+      enableVision,
+      enableCdp
+    });
 
     settingsPanel.classList.add('collapsed');
-    appendLog({ type: 'success', message: 'API 配置已成功保存' });
   });
 
-  // 快捷 Prompt 标签填充
-  promptChips.forEach((chip) => {
-    chip.addEventListener('click', () => {
-      taskGoalInput.value = chip.dataset.prompt;
-      taskGoalInput.focus();
-    });
-  });
+  // 3. 消息流渲染辅助函数
+  function removeEmptyState() {
+    if (emptyState && emptyState.parentNode) {
+      emptyState.remove();
+    }
+  }
 
-  /**
-   * 刷新界面状态徽章
-   */
-  function setStatus(statusText, type = 'idle') {
-    statusBadge.className = `status-pill status-${type}`;
-    statusBadge.querySelector('.text').textContent = statusText;
+  function scrollToBottom() {
+    streamContainer.scrollTop = streamContainer.scrollHeight;
   }
 
   /**
-   * 追加日志卡片
+   * 渲染用户消息：明确框起来展示
    */
-  function appendLog({ type, message, data }) {
-    // 移除空状态占位
-    const emptyState = logsContainer.querySelector('.empty-state');
-    if (emptyState) emptyState.remove();
+  function appendUserMessage(text) {
+    removeEmptyState();
+    const container = document.createElement('div');
+    container.className = 'user-query-container stream-node';
 
-    const item = document.createElement('div');
-    item.className = 'log-item';
+    const card = document.createElement('div');
+    card.className = 'user-query-card';
+    card.textContent = text;
 
-    if (type === 'step') {
-      const tag = document.createElement('span');
-      tag.className = 'log-step-tag';
-      tag.textContent = `第 ${data.step} 步 / 共 ${data.maxSteps} 步`;
-      item.appendChild(tag);
-    } else if (type === 'thought') {
-      const thoughtEl = document.createElement('div');
-      thoughtEl.className = 'log-thought';
-      thoughtEl.textContent = `💭 ${message}`;
-      item.appendChild(thoughtEl);
-    } else if (type === 'action') {
-      const actionEl = document.createElement('div');
-      actionEl.className = 'log-action';
-      actionEl.textContent = `⚡ ${message} ${data ? JSON.stringify(data) : ''}`;
-      item.appendChild(actionEl);
-    } else if (type === 'success') {
-      const successEl = document.createElement('div');
-      successEl.className = 'log-success';
-      successEl.textContent = `✓ ${message}`;
-      item.appendChild(successEl);
-    } else if (type === 'error') {
-      const errEl = document.createElement('div');
-      errEl.className = 'log-error';
-      errEl.textContent = `✗ 错误: ${message}`;
-      item.appendChild(errEl);
-    } else if (type === 'warn') {
-      const warnEl = document.createElement('div');
-      warnEl.className = 'log-warn';
-      warnEl.textContent = `! ${message}`;
-      item.appendChild(warnEl);
-    } else {
-      const textEl = document.createElement('div');
-      textEl.textContent = message;
-      item.appendChild(textEl);
-    }
-
-    logsContainer.appendChild(item);
-    logsContainer.scrollTop = logsContainer.scrollHeight;
+    container.appendChild(card);
+    streamContainer.appendChild(container);
+    scrollToBottom();
   }
 
-  // 启动任务处理
-  startTaskBtn.addEventListener('click', async () => {
-    const goal = taskGoalInput.value.trim();
-    if (!goal) {
-      alert('请先输入要自动执行的目标任务！');
-      return;
+  /**
+   * 确保存在当前活动模型响应容器（模型回复直接自然排版，不加大外框）
+   */
+  function ensureModelResponseNode() {
+    removeEmptyState();
+    if (!currentModelNode) {
+      currentModelNode = document.createElement('div');
+      currentModelNode.className = 'assistant-response stream-node';
+      streamContainer.appendChild(currentModelNode);
+      currentThoughtBox = null;
+      currentDirectTextBox = null;
     }
+    return currentModelNode;
+  }
 
-    const currentConfig = {
-      baseUrl: baseUrlInput.value.trim(),
-      apiKey: apiKeyInput.value.trim(),
-      model: modelInput.value.trim()
-    };
-    const maxSteps = parseInt(maxStepsInput.value, 10) || 15;
+  /**
+   * 追加流式模型思考内容
+   */
+  function appendThoughtChunk(text) {
+    const parent = ensureModelResponseNode();
+    if (!currentThoughtBox) {
+      currentThoughtBox = document.createElement('div');
+      currentThoughtBox.className = 'model-thought-box';
+      currentThoughtBox.textContent = '思考过程: ';
+      parent.appendChild(currentThoughtBox);
+    }
+    currentThoughtBox.textContent += text;
+    scrollToBottom();
+  }
 
-    // 清空历史日志容器
-    logsContainer.innerHTML = '';
-    startTaskBtn.disabled = true;
-    stopTaskBtn.disabled = false;
-    setStatus('执行中', 'running');
+  /**
+   * 追加流式模型正文消息（直接输出）
+   */
+  function appendContentChunk(text) {
+    const parent = ensureModelResponseNode();
+    if (!currentDirectTextBox) {
+      currentDirectTextBox = document.createElement('div');
+      currentDirectTextBox.className = 'model-text-direct';
+      parent.appendChild(currentDirectTextBox);
+    }
+    currentDirectTextBox.textContent += text;
+    scrollToBottom();
+  }
 
-    currentAgent = new BrowserAgent({
-      apiConfig: currentConfig,
-      maxSteps: maxSteps,
-      listeners: {
-        statusChange: (status) => {
-          if (status === 'running') setStatus('运行中', 'running');
-          if (status === 'completed') setStatus('已达成', 'completed');
-          if (status === 'stopped') setStatus('已停止', 'idle');
-          if (status === 'error') setStatus('发生异常', 'error');
-        },
-        stepStart: ({ step, maxSteps }) => {
-          stepCounter.textContent = `第 ${step} / ${maxSteps} 步`;
-          appendLog({ type: 'step', data: { step, maxSteps } });
-        },
-        log: (logItem) => {
-          appendLog(logItem);
-        },
-        complete: ({ summary }) => {
-          appendLog({ type: 'success', message: `🎉 任务圆满完成！\n总结：${summary}` });
-          startTaskBtn.disabled = false;
-          stopTaskBtn.disabled = true;
-        },
-        error: (errMessage) => {
-          appendLog({ type: 'error', message: errMessage });
-          startTaskBtn.disabled = false;
-          stopTaskBtn.disabled = true;
-        }
+  /**
+   * 渲染工具信息卡片：明确框起来展示
+   */
+  function createToolCard({ id, name, args }) {
+    removeEmptyState();
+    // 开启工具卡片时重置当前模型文本流容器
+    currentModelNode = null;
+    currentThoughtBox = null;
+    currentDirectTextBox = null;
+
+    const card = document.createElement('div');
+    card.className = 'tool-action-card stream-node';
+    card.dataset.toolId = id;
+
+    const header = document.createElement('div');
+    header.className = 'tool-card-header';
+
+    const nameGroup = document.createElement('div');
+    nameGroup.className = 'tool-name-group';
+    nameGroup.textContent = name;
+
+    const badge = document.createElement('span');
+    badge.className = 'tool-indicator-badge running';
+    badge.textContent = '执行中';
+
+    header.appendChild(nameGroup);
+    header.appendChild(badge);
+    card.appendChild(header);
+
+    const body = document.createElement('div');
+    body.className = 'tool-card-body';
+
+    const argsText = document.createElement('div');
+    argsText.className = 'tool-args-preview';
+    argsText.textContent = args ? JSON.stringify(args) : '';
+    body.appendChild(argsText);
+
+    card.appendChild(body);
+    streamContainer.appendChild(card);
+    activeToolCards.set(id, { card, badge, body });
+    scrollToBottom();
+  }
+
+  /**
+   * 更新工具卡片执行结果
+   */
+  function updateToolCard({ id, success, result }) {
+    const entry = activeToolCards.get(id);
+    if (!entry) return;
+
+    const { badge, body } = entry;
+    badge.className = `tool-indicator-badge ${success ? 'success' : 'error'}`;
+    badge.textContent = success ? '已完成' : '失败';
+
+    const resBox = document.createElement('div');
+    resBox.className = `tool-result-box ${success ? 'success' : 'error'}`;
+    resBox.textContent = result || (success ? '执行完毕' : '执行失败');
+    body.appendChild(resBox);
+
+    scrollToBottom();
+  }
+
+  // 4. 更新界面控制状态
+  function updateUiStatus(status) {
+    currentStatus = status;
+    statusBadge.className = `status-indicator status-${status}`;
+
+    if (status === 'running') {
+      statusText.textContent = '执行中';
+      sendBtn.disabled = true;
+      pauseResumeBtn.disabled = false;
+      stopBtn.disabled = false;
+      pauseIcon.classList.remove('hidden');
+      resumeIcon.classList.add('hidden');
+      pauseBtnText.textContent = '暂停';
+    } else if (status === 'paused') {
+      statusText.textContent = '已挂起';
+      sendBtn.disabled = true;
+      pauseResumeBtn.disabled = false;
+      stopBtn.disabled = false;
+      pauseIcon.classList.add('hidden');
+      resumeIcon.classList.remove('hidden');
+      pauseBtnText.textContent = '继续';
+    } else if (status === 'completed') {
+      statusText.textContent = '已完成';
+      sendBtn.disabled = false;
+      pauseResumeBtn.disabled = true;
+      stopBtn.disabled = true;
+      stepBadge.classList.add('hidden');
+    } else if (status === 'stopped' || status === 'idle') {
+      statusText.textContent = '就绪';
+      sendBtn.disabled = false;
+      pauseResumeBtn.disabled = true;
+      stopBtn.disabled = true;
+      stepBadge.classList.add('hidden');
+    } else if (status === 'error') {
+      statusText.textContent = '异常';
+      sendBtn.disabled = false;
+      pauseResumeBtn.disabled = true;
+      stopBtn.disabled = true;
+    }
+  }
+
+  // 5. 与后台 Service Worker 建立端口通信
+  let port = null;
+
+  function connectToBackground() {
+    port = chrome.runtime.connect({ name: 'webauto-sidepanel' });
+
+    port.onMessage.addListener((msg) => {
+      switch (msg.type) {
+        case 'INIT_STATE':
+          updateUiStatus(msg.status);
+          if (msg.events && msg.events.length > 0) {
+            removeEmptyState();
+            // 重建历史日志
+            for (const ev of msg.events) {
+              handleEngineEvent(ev);
+            }
+          }
+          break;
+
+        case 'statusChange':
+          updateUiStatus(msg.status);
+          break;
+
+        case 'stepStart':
+          stepBadge.classList.remove('hidden');
+          stepBadge.textContent = `第 ${msg.step} / ${msg.maxSteps} 步`;
+          break;
+
+        case 'modelThinkingStart':
+          ensureModelResponseNode();
+          break;
+
+        case 'thoughtChunk':
+          appendThoughtChunk(msg.text);
+          break;
+
+        case 'contentChunk':
+          appendContentChunk(msg.text);
+          break;
+
+        case 'modelThinkingEnd':
+          break;
+
+        case 'toolCallStart':
+          createToolCard(msg);
+          break;
+
+        case 'toolCallEnd':
+          updateToolCard(msg);
+          break;
+
+        case 'complete':
+          appendContentChunk(`\n任务总结：${msg.summary}`);
+          updateUiStatus('completed');
+          break;
+
+        case 'error':
+          const errDiv = document.createElement('div');
+          errDiv.className = 'tool-result-box error stream-node';
+          errDiv.textContent = `执行异常: ${msg.message}`;
+          streamContainer.appendChild(errDiv);
+          updateUiStatus('error');
+          scrollToBottom();
+          break;
+
+        case 'HISTORY_CLEARED':
+          streamContainer.innerHTML = `
+            <div id="empty-state" class="empty-state">
+              <div class="empty-icon-wrapper">
+                <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+                  <line x1="8" y1="21" x2="16" y2="21"></line>
+                  <line x1="12" y1="17" x2="12" y2="21"></line>
+                </svg>
+              </div>
+              <p class="empty-title">网页自动化就绪</p>
+              <p class="empty-subtitle">在下方输入指令，助手将自主感知网页并执行点击、输入与导航</p>
+            </div>
+          `;
+          updateUiStatus('idle');
+          break;
       }
     });
 
-    try {
-      await currentAgent.start(goal);
-    } catch (e) {
-      appendLog({ type: 'error', message: e.message });
-    } finally {
-      startTaskBtn.disabled = false;
-      stopTaskBtn.disabled = true;
+    port.onDisconnect.addListener(() => {
+      // 端口断开后尝试重连
+      setTimeout(connectToBackground, 1000);
+    });
+  }
+
+  function handleEngineEvent(ev) {
+    if (ev.type === 'toolCallStart') {
+      createToolCard(ev);
+    } else if (ev.type === 'toolCallEnd') {
+      updateToolCard(ev);
+    } else if (ev.type === 'thoughtChunk') {
+      appendThoughtChunk(ev.text);
+    } else if (ev.type === 'contentChunk') {
+      appendContentChunk(ev.text);
+    } else if (ev.type === 'complete') {
+      appendContentChunk(`\n任务总结：${ev.summary}`);
+    }
+  }
+
+  connectToBackground();
+
+  // 6. 输入框自适应扩展与快捷键
+  function autoResizeTextarea() {
+    taskInput.style.height = 'auto';
+    taskInput.style.height = `${Math.min(taskInput.scrollHeight, 140)}px`;
+  }
+
+  taskInput.addEventListener('input', autoResizeTextarea);
+
+  taskInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      triggerSendTask();
     }
   });
 
-  // 停止任务处理
-  stopTaskBtn.addEventListener('click', async () => {
-    if (currentAgent) {
-      await currentAgent.stop();
-      startTaskBtn.disabled = false;
-      stopTaskBtn.disabled = true;
-      setStatus('已停止', 'idle');
+  // 7. 发送任务
+  async function triggerSendTask() {
+    const goal = taskInput.value.trim();
+    if (!goal) return;
+
+    appendUserMessage(goal);
+    taskInput.value = '';
+    taskInput.style.height = 'auto';
+
+    const currentConfig = {
+      apiConfig: {
+        baseUrl: baseUrlInput.value.trim(),
+        apiKey: apiKeyInput.value.trim(),
+        model: modelInput.value.trim()
+      },
+      maxSteps: parseInt(maxStepsInput.value, 10) || 20,
+      enableVision: visionToggle.checked,
+      enableCdp: cdpToggle.checked
+    };
+
+    updateUiStatus('running');
+
+    if (port) {
+      port.postMessage({
+        action: 'START_TASK',
+        goal: goal,
+        config: currentConfig
+      });
+    }
+  }
+
+  sendBtn.addEventListener('click', triggerSendTask);
+
+  // 8. 暂停/恢复与停止控制
+  pauseResumeBtn.addEventListener('click', () => {
+    if (!port) return;
+    if (currentStatus === 'running') {
+      port.postMessage({ action: 'PAUSE_TASK' });
+    } else if (currentStatus === 'paused') {
+      port.postMessage({ action: 'RESUME_TASK' });
+    }
+  });
+
+  stopBtn.addEventListener('click', () => {
+    if (port) {
+      port.postMessage({ action: 'STOP_TASK' });
+    }
+  });
+
+  // 9. 清空历史
+  clearHistoryBtn.addEventListener('click', () => {
+    if (port) {
+      port.postMessage({ action: 'CLEAR_HISTORY' });
     }
   });
 });

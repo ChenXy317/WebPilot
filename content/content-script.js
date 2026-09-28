@@ -1,27 +1,37 @@
 /**
- * 网页内容脚本 (Content Script)
- * 负责页面元素感知（提取与视觉角标标注）及模拟执行用户动作
+ * 网页内容感知与动作模拟执行脚本
+ * 负责 DOM 结构扫描、穿透 Shadow DOM、真实视口遮挡判定、角标渲染及拟人化操作模拟
  */
 
 (() => {
-  // 维护当前屏幕上已标注的元素映射表
+  // 单例防重复注入守卫，防止多次注入导致消息监听器重复注册
+  if (window.__WEBAUTO_CONTENT_SCRIPT_INITIALIZED__) {
+    return;
+  }
+  window.__WEBAUTO_CONTENT_SCRIPT_INITIALIZED__ = true;
+
+  // 维护当前活跃的元素与角标映射
   let elementRegistry = new Map();
   let markersContainer = null;
+  let activeScrollListener = null;
 
   /**
-   * 初始化角标容器
+   * 初始化固定视口角标容器
    */
   function ensureMarkerContainer() {
     if (!markersContainer || !document.contains(markersContainer)) {
-      markersContainer = document.createElement('div');
-      markersContainer.id = 'webauto-markers-container';
-      document.body.appendChild(markersContainer);
+      markersContainer = document.getElementById('webauto-markers-container');
+      if (!markersContainer) {
+        markersContainer = document.createElement('div');
+        markersContainer.id = 'webauto-markers-container';
+        (document.fullscreenElement || document.body || document.documentElement).appendChild(markersContainer);
+      }
     }
     return markersContainer;
   }
 
   /**
-   * 清除页面上所有的标注角标与高亮框
+   * 清除所有角标与高亮状态
    */
   function clearAllMarkers() {
     if (markersContainer && markersContainer.parentNode) {
@@ -31,20 +41,56 @@
       el.classList.remove('webauto-highlight-active');
     });
     elementRegistry.clear();
+
+    if (activeScrollListener) {
+      window.removeEventListener('scroll', activeScrollListener, true);
+      window.removeEventListener('resize', activeScrollListener, true);
+      activeScrollListener = null;
+    }
   }
 
   /**
-   * 判断元素在视口中是否可见
+   * 判断元素是否被祖先滚动容器裁剪隐藏
+   */
+  function isClippedByOverflow(el, rect) {
+    let parent = el.parentElement;
+    while (parent && parent !== document.body && parent !== document.documentElement) {
+      const style = window.getComputedStyle(parent);
+      const overflowY = style.overflowY;
+      const overflowX = style.overflowX;
+      const isScrollable = (
+        overflowY === 'hidden' || overflowY === 'auto' || overflowY === 'scroll' ||
+        overflowX === 'hidden' || overflowX === 'auto' || overflowX === 'scroll'
+      );
+
+      if (isScrollable) {
+        const parentRect = parent.getBoundingClientRect();
+        if (
+          rect.bottom < parentRect.top ||
+          rect.top > parentRect.bottom ||
+          rect.right < parentRect.left ||
+          rect.left > parentRect.right
+        ) {
+          return true;
+        }
+      }
+      parent = parent.parentElement;
+    }
+    return false;
+  }
+
+  /**
+   * 严格检测元素在当前视口中的可见性与遮挡状态
    */
   function isElementVisible(el) {
     if (!el || !(el instanceof Element)) return false;
 
-    // 过滤自身或父级隐藏属性
+    // 基础样式检测
     const style = window.getComputedStyle(el);
     if (
       style.display === 'none' ||
       style.visibility === 'hidden' ||
-      style.opacity === '0' ||
+      parseFloat(style.opacity || '1') <= 0.05 ||
       el.hasAttribute('hidden') ||
       el.getAttribute('aria-hidden') === 'true'
     ) {
@@ -52,56 +98,149 @@
     }
 
     const rect = el.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return false;
+    if (rect.width <= 2 || rect.height <= 2) return false;
+
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
 
     // 视口相交判定
     const inViewport = (
-      rect.bottom >= 0 &&
-      rect.right >= 0 &&
-      rect.top <= (window.innerHeight || document.documentElement.clientHeight) &&
-      rect.left <= (window.innerWidth || document.documentElement.clientWidth)
+      rect.bottom > 0 &&
+      rect.right > 0 &&
+      rect.top < viewportHeight &&
+      rect.left < viewportWidth
     );
+    if (!inViewport) return false;
 
-    return inViewport;
+    // 检查祖先滚动容器裁剪
+    if (isClippedByOverflow(el, rect)) return false;
+
+    // 真实层级遮挡判定（采样中心点与边界点检测是否被遮罩或浮层阻挡）
+    const sampleX = Math.min(Math.max(rect.left + rect.width / 2, 0), viewportWidth - 1);
+    const sampleY = Math.min(Math.max(rect.top + rect.height / 2, 0), viewportHeight - 1);
+
+    const hitEl = document.elementFromPoint(sampleX, sampleY);
+    if (hitEl && !el.contains(hitEl) && !hitEl.contains(el)) {
+      // 若采样的中心点被非自身及子孙元素遮挡，再采样四角作为后备
+      const corners = [
+        [rect.left + 2, rect.top + 2],
+        [rect.right - 2, rect.top + 2],
+        [rect.left + 2, rect.bottom - 2],
+        [rect.right - 2, rect.bottom - 2]
+      ];
+      let visibleCorner = false;
+      for (const [cx, cy] of corners) {
+        if (cx >= 0 && cx < viewportWidth && cy >= 0 && cy < viewportHeight) {
+          const cornerHit = document.elementFromPoint(cx, cy);
+          if (cornerHit && (el.contains(cornerHit) || cornerHit.contains(el))) {
+            visibleCorner = true;
+            break;
+          }
+        }
+      }
+      if (!visibleCorner) return false;
+    }
+
+    return true;
   }
 
   /**
-   * 获取元素的描述文本
+   * 递归遍历包括 Shadow DOM 在内的所有子节点
+   */
+  function collectAllElements(root = document, results = new Set()) {
+    const walker = document.createTreeWalker(
+      root instanceof Document ? root.body || root.documentElement : root,
+      NodeFilter.SHOW_ELEMENT,
+      null
+    );
+
+    let currentNode = walker.currentNode;
+    while (currentNode) {
+      if (currentNode instanceof Element) {
+        results.add(currentNode);
+
+        // 穿透 open 模式的 Shadow DOM
+        if (currentNode.shadowRoot) {
+          collectAllElements(currentNode.shadowRoot, results);
+        }
+      }
+      currentNode = walker.nextNode();
+    }
+
+    // 穿透同源 iframe
+    const iframes = (root.querySelectorAll ? root.querySelectorAll('iframe') : []);
+    for (const iframe of iframes) {
+      try {
+        if (iframe.contentDocument) {
+          collectAllElements(iframe.contentDocument, results);
+        }
+      } catch (_) {}
+    }
+
+    return results;
+  }
+
+  /**
+   * 提取元素的可读语义文本
    */
   function extractElementText(el) {
     const tagName = el.tagName.toLowerCase();
-    
-    // 输入框取 placeholder 或当前值
+
     if (tagName === 'input' || tagName === 'textarea') {
       const inputEl = el;
       return inputEl.placeholder || inputEl.value || inputEl.getAttribute('aria-label') || '';
     }
 
-    // 优先读取显式无障碍标签与提示
     const ariaLabel = el.getAttribute('aria-label');
     if (ariaLabel && ariaLabel.trim()) return ariaLabel.trim();
 
     const title = el.getAttribute('title');
     if (title && title.trim()) return title.trim();
 
-    // 提取图像媒体替代文本
     const alt = el.getAttribute('alt') || el.querySelector('img')?.getAttribute('alt');
     if (alt && alt.trim()) return alt.trim();
 
-    // 读取文本内容
     const text = el.innerText || el.textContent || '';
-    return text.replace(/\s+/g, ' ').trim().slice(0, 80);
+    return text.replace(/\s+/g, ' ').trim().slice(0, 100);
   }
 
   /**
-   * 扫描页面中所有可交互元素并为其打上数字角标
+   * 同步更新已存在角标的视口坐标，防止滚动漂移
+   */
+  function updateBadgePositions() {
+    for (const [index, { element, badge }] of elementRegistry.entries()) {
+      if (!document.contains(element)) {
+        badge.style.display = 'none';
+        continue;
+      }
+      const rect = element.getBoundingClientRect();
+      const inView = (
+        rect.bottom > 0 &&
+        rect.right > 0 &&
+        rect.top < window.innerHeight &&
+        rect.left < window.innerWidth
+      );
+      if (inView) {
+        badge.style.display = 'block';
+        badge.style.left = `${Math.round(rect.left)}px`;
+        badge.style.top = `${Math.round(rect.top)}px`;
+      } else {
+        badge.style.display = 'none';
+      }
+    }
+  }
+
+  /**
+   * 扫描全页面并打上视口高对比度角标
    */
   function scanAndMarkElements() {
     clearAllMarkers();
     const container = ensureMarkerContainer();
 
-    // 候选选择器列表
-    const selector = [
+    const allNodes = collectAllElements(document);
+    const candidateSet = new Set();
+
+    const interactiveSelectors = [
       'a[href]',
       'button',
       'input',
@@ -110,54 +249,74 @@
       '[role="button"]',
       '[role="link"]',
       '[role="textbox"]',
+      '[role="searchbox"]',
       '[role="checkbox"]',
       '[role="radio"]',
       '[role="switch"]',
       '[role="tab"]',
       '[role="menuitem"]',
+      '[role="combobox"]',
+      '[contenteditable="true"]',
       '[tabindex]:not([tabindex="-1"])',
       '[onclick]'
-    ].join(',');
+    ];
 
-    const candidateSet = new Set(document.querySelectorAll(selector));
+    for (const node of allNodes) {
+      if (container.contains(node)) continue;
 
-    // 补充带有手型指针的交互元素，并过滤已被包含在父交互节点内的冗余子元素
-    const pointerNodes = document.querySelectorAll('div, span, li, p');
-    for (const node of pointerNodes) {
-      if (candidateSet.size >= 250) break;
-      if (candidateSet.has(node)) continue;
+      let isCandidate = false;
+      for (const sel of interactiveSelectors) {
+        if (node.matches && node.matches(sel)) {
+          isCandidate = true;
+          break;
+        }
+      }
 
-      if (node.closest('button, a, select, textarea, [role="button"]')) continue;
+      if (!isCandidate) {
+        const style = window.getComputedStyle(node);
+        if (style.cursor === 'pointer') {
+          // 避免包含在父级可点击元素内的冗余子元素
+          if (!node.closest('button, a, select, textarea, [role="button"]')) {
+            isCandidate = true;
+          }
+        }
+      }
 
-      const style = window.getComputedStyle(node);
-      if (style.cursor === 'pointer') {
+      if (isCandidate && isElementVisible(node)) {
         candidateSet.add(node);
       }
+
+      if (candidateSet.size >= 300) break;
     }
 
     let nextIndex = 1;
     const elementsData = [];
 
     for (const el of candidateSet) {
-      // 避免标记角标自身或容器内部
-      if (container.contains(el)) continue;
-
-      if (!isElementVisible(el)) continue;
-
       const rect = el.getBoundingClientRect();
       const tagName = el.tagName.toLowerCase();
       const text = extractElementText(el);
 
       const itemIndex = nextIndex++;
-      elementRegistry.set(itemIndex, el);
 
-      // 创建并放置浮动角标
+      // 创建固定视口浮动角标
       const badge = document.createElement('div');
       badge.className = 'webauto-highlight-badge';
       badge.textContent = `${itemIndex}`;
-      badge.style.left = `${Math.max(0, rect.left + window.scrollX)}px`;
-      badge.style.top = `${Math.max(0, rect.top + window.scrollY)}px`;
+      badge.style.left = `${Math.round(rect.left)}px`;
+      badge.style.top = `${Math.round(rect.top)}px`;
       container.appendChild(badge);
+
+      // 计算元素视口中心坐标（供 CDP 硬件级事件或视口定位）
+      const centerX = Math.round(rect.left + rect.width / 2);
+      const centerY = Math.round(rect.top + rect.height / 2);
+
+      elementRegistry.set(itemIndex, {
+        element: el,
+        badge: badge,
+        centerX: centerX,
+        centerY: centerY
+      });
 
       elementsData.push({
         index: itemIndex,
@@ -166,9 +325,17 @@
         text: text,
         role: el.getAttribute('role') || '',
         placeholder: el.getAttribute('placeholder') || '',
-        href: el.getAttribute('href') || ''
+        href: el.getAttribute('href') || '',
+        center: { x: centerX, y: centerY }
       });
     }
+
+    // 绑定视口滚动与尺寸监听以保持角标贴合
+    activeScrollListener = () => {
+      requestAnimationFrame(updateBadgePositions);
+    };
+    window.addEventListener('scroll', activeScrollListener, { passive: true, capture: true });
+    window.addEventListener('resize', activeScrollListener, { passive: true });
 
     return {
       title: document.title,
@@ -182,97 +349,161 @@
   }
 
   /**
-   * 触发点击操作
+   * 执行拟人化点击操作
    */
   async function performClick(index) {
-    const el = elementRegistry.get(Number(index));
-    if (!el) {
-      throw new Error(`未找到编号为 [${index}] 的页面元素，请确认该元素是否依然在当前视图内`);
+    const entry = elementRegistry.get(Number(index));
+    if (!entry || !entry.element) {
+      throw new Error(`未找到编号为 [${index}] 的元素，请确认该元素是否依然在当前视图内`);
     }
 
+    const el = entry.element;
     el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
     el.classList.add('webauto-highlight-active');
-    
-    await new Promise((r) => setTimeout(r, 200));
 
-    // 派发原生指针与鼠标事件
+    await new Promise((r) => setTimeout(r, 150));
+
+    const rect = el.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+
+    const eventInit = {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      clientX: cx,
+      clientY: cy
+    };
+
+    // 派发全套鼠标与指针事件序列
     try {
-      el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, view: window }));
+      el.dispatchEvent(new PointerEvent('pointerover', eventInit));
+      el.dispatchEvent(new PointerEvent('pointerenter', eventInit));
+      el.dispatchEvent(new PointerEvent('pointerdown', eventInit));
     } catch (_) {}
 
-    const mouseEvents = ['mouseover', 'mousedown', 'mouseup', 'click'];
-    for (const eventName of mouseEvents) {
-      el.dispatchEvent(
-        new MouseEvent(eventName, {
-          bubbles: true,
-          cancelable: true,
-          view: window
-        })
-      );
+    el.dispatchEvent(new MouseEvent('mouseover', eventInit));
+    el.dispatchEvent(new MouseEvent('mousedown', eventInit));
+
+    if (typeof el.focus === 'function') {
+      el.focus();
     }
 
     try {
-      el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, view: window }));
+      el.dispatchEvent(new PointerEvent('pointerup', eventInit));
     } catch (_) {}
+
+    el.dispatchEvent(new MouseEvent('mouseup', eventInit));
+    el.dispatchEvent(new MouseEvent('click', eventInit));
 
     if (typeof el.click === 'function') {
       el.click();
     }
 
-    if (typeof el.focus === 'function') {
-      el.focus();
-    }
-
-    await new Promise((r) => setTimeout(r, 300));
-    return { success: true, message: `成功点击元素 [${index}]` };
+    await new Promise((r) => setTimeout(r, 200));
+    return {
+      success: true,
+      message: `成功点击元素 [${index}]`,
+      center: { x: Math.round(cx), y: Math.round(cy) }
+    };
   }
 
   /**
-   * 触发文本输入操作（深度兼容 React/Vue 等响应式框架数据绑定）
+   * 执行文本输入操作（深度兼容 React/Vue 受控组件及 contenteditable 现代富文本）
    */
   async function performInput(index, text, pressEnter = false) {
-    const el = elementRegistry.get(Number(index));
-    if (!el) {
+    const entry = elementRegistry.get(Number(index));
+    if (!entry || !entry.element) {
       throw new Error(`未找到编号为 [${index}] 的输入元素`);
     }
 
+    const el = entry.element;
     el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
     el.classList.add('webauto-highlight-active');
+
     if (typeof el.focus === 'function') {
       el.focus();
     }
+    await new Promise((r) => setTimeout(r, 100));
 
-    await new Promise((r) => setTimeout(r, 150));
-
-    // 针对响应式框架（React/Vue）触发 setter 代理拦截
     const isTextArea = el instanceof HTMLTextAreaElement;
     const isInput = el instanceof HTMLInputElement;
+    const isContentEditable = el.isContentEditable || el.getAttribute('contenteditable') === 'true';
 
     if (isInput || isTextArea) {
+      // 派发 beforeinput 规范事件
+      try {
+        el.dispatchEvent(new InputEvent('beforeinput', {
+          bubbles: true,
+          cancelable: true,
+          inputType: 'insertText',
+          data: text
+        }));
+      } catch (_) {}
+
+      // 重写原型 setter 触发框架受控状态更新
       const proto = isTextArea ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
       const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-
       if (nativeSetter) {
         nativeSetter.call(el, text);
       } else {
         el.value = text;
       }
-    } else if (el.isContentEditable) {
-      el.textContent = text;
+
+      // 派发标准 InputEvent 与 change 事件
+      try {
+        el.dispatchEvent(new InputEvent('input', {
+          bubbles: true,
+          cancelable: true,
+          inputType: 'insertText',
+          data: text
+        }));
+      } catch (_) {
+        el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+      }
+      el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+
+    } else if (isContentEditable) {
+      // 对富文本编辑器使用标准选区插入，保全虚拟 DOM 状态
+      try {
+        el.dispatchEvent(new InputEvent('beforeinput', {
+          bubbles: true,
+          cancelable: true,
+          inputType: 'insertText',
+          data: text
+        }));
+      } catch (_) {}
+
+      const selection = window.getSelection();
+      if (selection && selection.rangeCount > 0) {
+        document.execCommand('selectAll', false, null);
+        document.execCommand('insertText', false, text);
+      } else {
+        el.textContent = text;
+      }
+
+      try {
+        el.dispatchEvent(new InputEvent('input', {
+          bubbles: true,
+          cancelable: true,
+          inputType: 'insertText',
+          data: text
+        }));
+      } catch (_) {
+        el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+      }
     } else {
       el.value = text;
+      el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
     }
 
-    // 触发事件通知框架状态更新
-    el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-
-    // 回车键支持
+    // 回车键联动支持
     if (pressEnter) {
       await new Promise((r) => setTimeout(r, 100));
-      const enterKeyEvents = ['keydown', 'keypress', 'keyup'];
+      const enterEvents = ['keydown', 'keypress', 'keyup'];
       let enterPrevented = false;
-      for (const ev of enterKeyEvents) {
+      for (const ev of enterEvents) {
         const keyEv = new KeyboardEvent(ev, {
           key: 'Enter',
           code: 'Enter',
@@ -286,22 +517,24 @@
         if (!dispatched) enterPrevented = true;
       }
 
-      // 若未被前端逻辑拦截且存在关联表单，则触发表单提交
       if (el.form && !enterPrevented) {
         el.form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       }
     }
 
-    return { success: true, message: `成功在元素 [${index}] 中输入内容: "${text}"` };
+    return {
+      success: true,
+      message: `成功在元素 [${index}] 中输入内容: "${text}"`
+    };
   }
 
   /**
-   * 触发滚动操作
+   * 执行平滑滚动操作
    */
-  async function performScroll(direction = 'down', amount = 500) {
+  async function performScroll(direction = 'down', amount = 600) {
     const distance = direction === 'up' ? -Math.abs(amount) : Math.abs(amount);
     window.scrollBy({ top: distance, behavior: 'smooth' });
-    await new Promise((r) => setTimeout(r, 400));
+    await new Promise((r) => setTimeout(r, 350));
     return {
       success: true,
       message: `向${direction === 'up' ? '上' : '下'}滚动 ${amount} 像素`
@@ -309,25 +542,8 @@
   }
 
   /**
-   * 触发全局键盘按键
+   * 消息监听与指令分发
    */
-  async function performKeyPress(key = 'Enter') {
-    const target = document.activeElement || document.body;
-    const events = ['keydown', 'keyup'];
-    for (const ev of events) {
-      target.dispatchEvent(
-        new KeyboardEvent(ev, {
-          key: key,
-          code: key,
-          bubbles: true,
-          cancelable: true
-        })
-      );
-    }
-    return { success: true, message: `已触发键盘按键: ${key}` };
-  }
-
-  // 消息监听分发
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     (async () => {
       try {
@@ -337,8 +553,8 @@
             break;
 
           case 'SCAN':
-            const scanResult = scanAndMarkElements();
-            sendResponse({ success: true, data: scanResult });
+            const scanData = scanAndMarkElements();
+            sendResponse({ success: true, data: scanData });
             break;
 
           case 'CLICK':
@@ -356,25 +572,19 @@
             sendResponse({ success: true, data: scrollRes });
             break;
 
-          case 'PRESS_KEY':
-            const keyRes = await performKeyPress(request.key);
-            sendResponse({ success: true, data: keyRes });
-            break;
-
           case 'CLEAR_MARKERS':
             clearAllMarkers();
             sendResponse({ success: true });
             break;
 
           default:
-            sendResponse({ success: false, error: `未知指令: ${request.action}` });
+            sendResponse({ success: false, error: `未知操作指令: ${request.action}` });
         }
       } catch (err) {
         sendResponse({ success: false, error: err.message || String(err) });
       }
     })();
 
-    // 返回 true 支持异步响应
     return true;
   });
 })();
