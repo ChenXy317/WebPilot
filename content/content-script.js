@@ -25,7 +25,7 @@
       if (!markersContainer) {
         markersContainer = document.createElement('div');
         markersContainer.id = 'webauto-markers-container';
-        (document.fullscreenElement || document.body || document.documentElement).appendChild(markersContainer);
+        (document.fullscreenElement || document.documentElement).appendChild(markersContainer);
       }
     }
     return markersContainer;
@@ -420,10 +420,36 @@
       if (candidateSet.size >= 300) break;
     }
 
+    // 过滤嵌套的外层包裹容器与超大尺寸遮罩
+    const filteredCandidates = [];
+    const ignoredContainers = new Set(['html', 'body', 'main', 'article', 'section', 'header', 'footer', 'nav', 'aside', 'ul', 'ol']);
+
+    for (const node of candidateSet) {
+      const tagName = node.tagName.toLowerCase();
+      if (ignoredContainers.has(tagName)) continue;
+
+      const rect = node.getBoundingClientRect();
+      if (rect.width > window.innerWidth * 0.85 && rect.height > window.innerHeight * 0.85) {
+        continue;
+      }
+
+      const isNative = ['button', 'input', 'select', 'textarea', 'a'].includes(tagName);
+      if (!isNative) {
+        const hasInteractiveChild = node.querySelector(
+          'button, a[href], input, select, textarea, [role="button"], [role="link"], [role="checkbox"]'
+        );
+        if (hasInteractiveChild) {
+          continue;
+        }
+      }
+
+      filteredCandidates.push(node);
+    }
+
     let nextIndex = 1;
     const elementsData = [];
 
-    for (const el of candidateSet) {
+    for (const el of filteredCandidates) {
       const rect = el.getBoundingClientRect();
       const tagName = el.tagName.toLowerCase();
       const text = extractElementText(el);

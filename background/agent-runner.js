@@ -289,13 +289,23 @@ export class AgentRunner {
     switch (name) {
       case 'click_element': {
         const useCdp = this.cdpAttached;
-        const res = await chrome.tabs.sendMessage(tabId, {
-          action: 'CLICK',
-          index: args.index,
-          ref: args.ref,
-          skipDomClick: useCdp
-        });
-        if (!res.success) throw new Error(res.error || '点击元素失败');
+        let res;
+        try {
+          res = await chrome.tabs.sendMessage(tabId, {
+            action: 'CLICK',
+            index: args.index,
+            ref: args.ref,
+            skipDomClick: useCdp
+          });
+        } catch (sendErr) {
+          if (sendErr.message?.includes('message channel closed') || sendErr.message?.includes('Could not establish connection')) {
+            await this.waitForPageReady(tabId);
+            return `已触发点击元素 (ref: "${args.ref}")，检测到页面已完成导航跳转`;
+          }
+          throw sendErr;
+        }
+
+        if (!res?.success) throw new Error(res?.error || '点击元素失败');
 
         // 若启用且附着 CDP，仅由 CDP 派发系统级硬件单击
         if (useCdp && res.data?.center) {
@@ -507,11 +517,20 @@ export class AgentRunner {
           throw new Error(scanResponse?.error || '网页 DOM 结构提取失败');
         }
 
-        // 历史快照归档，避免 Context 爆炸
+        // 历史快照归档，避免 Context 爆炸（兼顾纯文本与多模态数组格式）
         for (let i = 0; i < this.history.length; i++) {
           const item = this.history[i];
-          if (item.role === 'user' && typeof item.content === 'string' && item.content.includes('【当前视口内可见交互元素列表】')) {
-            item.content = `用户目标: "${this.currentGoal}" (历史快照已归档)`;
+          if (item.role === 'user') {
+            if (typeof item.content === 'string' && item.content.includes('【当前视口内可见交互元素列表】')) {
+              item.content = `用户目标: "${this.currentGoal}" (历史快照已归档)`;
+            } else if (Array.isArray(item.content)) {
+              item.content = item.content.map((part) => {
+                if (part.type === 'text' && part.text && part.text.includes('【当前视口内可见交互元素列表】')) {
+                  return { type: 'text', text: `用户目标: "${this.currentGoal}" (历史快照已归档)` };
+                }
+                return part;
+              });
+            }
           }
         }
 
@@ -535,13 +554,36 @@ export class AgentRunner {
             }
           }
 
-          try {
-            const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 65 });
+          let dataUrl = null;
+          if (this.cdpAttached) {
+            try {
+              const res = await chrome.debugger.sendCommand({ tabId: this.targetTabId }, 'Page.captureScreenshot', {
+                format: 'jpeg',
+                quality: 65
+              });
+              if (res?.data) {
+                dataUrl = `data:image/jpeg;base64,${res.data}`;
+              }
+            } catch (_) {}
+          }
+
+          if (!dataUrl) {
+            try {
+              const [activeInWindow] = await chrome.tabs.query({ active: true, windowId: tab.windowId });
+              if (!activeInWindow || activeInWindow.id !== this.targetTabId) {
+                await chrome.tabs.update(this.targetTabId, { active: true });
+                await new Promise((r) => setTimeout(r, 150));
+              }
+              dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 65 });
+            } catch (_) {}
+          }
+
+          if (dataUrl) {
             messagePayload = [
               { type: 'text', text: userPrompt },
               { type: 'image_url', image_url: { url: dataUrl } }
             ];
-          } catch (_) {
+          } else {
             messagePayload = userPrompt;
           }
         } else {
@@ -586,6 +628,11 @@ export class AgentRunner {
           });
           this.currentStep--;
           continue;
+        }
+
+        // 成功获取工具调用后清理临时重试消息以保持历史整洁
+        if (consecutiveNoToolCount > 0) {
+          this.history.splice(-consecutiveNoToolCount * 2);
         }
         consecutiveNoToolCount = 0;
 
