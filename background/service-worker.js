@@ -47,12 +47,53 @@ function broadcast(event) {
   }
 }
 
+/**
+ * 检查并恢复因后台挂起而中断的未完成任务
+ */
+async function recoverRunningTaskIfNeeded() {
+  if (activeRunner && activeRunner.status === 'running') {
+    return;
+  }
+  try {
+    const { agentRunnerState, apiConfig, currentGoal: savedGoal } = await chrome.storage.local.get([
+      'agentRunnerState',
+      'apiConfig',
+      'currentGoal'
+    ]);
+
+    if (agentRunnerState && agentRunnerState.status === 'running') {
+      currentGoal = agentRunnerState.currentGoal || savedGoal || '';
+      activeRunner = new AgentRunner({
+        apiConfig: apiConfig || {},
+        maxSteps: agentRunnerState.maxSteps,
+        enableVision: agentRunnerState.enableVision,
+        enableCdp: agentRunnerState.enableCdp,
+        onEvent: (ev) => {
+          broadcast(ev);
+          if (['complete', 'error', 'statusChange'].includes(ev.type)) {
+            chrome.storage.local.set({ eventLogHistory });
+            if (['completed', 'stopped', 'error'].includes(ev.status)) {
+              chrome.alarms.clear('webauto-keepalive');
+            }
+          }
+        }
+      });
+
+      chrome.alarms.create('webauto-keepalive', { periodInMinutes: 0.5 });
+      activeRunner.resumeExecution(agentRunnerState).catch((e) => {
+        chrome.alarms.clear('webauto-keepalive');
+        broadcast({ type: 'error', message: e.message });
+      });
+    }
+  } catch (_) {}
+}
+
 // 侧边栏端口长连接监听
 chrome.runtime.onConnect.addListener(async (port) => {
   if (port.name === 'webauto-sidepanel') {
     connectedPorts.add(port);
 
-    // 握手时同步持久化历史流与状态
+    // 握手时同步持久化历史流与状态，并尝试恢复可能中断的任务
     if (eventLogHistory.length === 0) {
       try {
         const stored = await chrome.storage.local.get(['eventLogHistory', 'currentGoal']);
@@ -64,6 +105,8 @@ chrome.runtime.onConnect.addListener(async (port) => {
         }
       } catch (_) {}
     }
+
+    await recoverRunningTaskIfNeeded();
 
     port.postMessage({
       type: 'INIT_STATE',
@@ -116,11 +159,11 @@ chrome.runtime.onConnect.addListener(async (port) => {
             break;
 
           case 'PAUSE_TASK':
-            if (activeRunner) activeRunner.pause();
+            if (activeRunner) await activeRunner.pause();
             break;
 
           case 'RESUME_TASK':
-            if (activeRunner) activeRunner.resume();
+            if (activeRunner) await activeRunner.resume();
             break;
 
           case 'STOP_TASK':
@@ -142,7 +185,7 @@ chrome.runtime.onConnect.addListener(async (port) => {
   }
 });
 
-// 定时心跳唤醒保活
+// 定时心跳唤醒保活与自愈检查
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === 'webauto-keepalive') {
     if (activeRunner && activeRunner.status === 'running') {
@@ -150,7 +193,13 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         await chrome.runtime.getPlatformInfo();
       } catch (_) {}
     } else {
-      chrome.alarms.clear('webauto-keepalive');
+      await recoverRunningTaskIfNeeded();
+      if (!activeRunner || activeRunner.status !== 'running') {
+        chrome.alarms.clear('webauto-keepalive');
+      }
     }
   }
 });
+
+// 模块初始化时尝试自愈
+recoverRunningTaskIfNeeded();

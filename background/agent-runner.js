@@ -77,18 +77,58 @@ export class AgentRunner {
   /**
    * 暂停任务
    */
-  pause() {
+  /**
+   * 序列化当前调度器状态
+   */
+  serializeState() {
+    return {
+      status: this.status,
+      currentStep: this.currentStep,
+      maxSteps: this.maxSteps,
+      history: this.history,
+      currentGoal: this.currentGoal,
+      targetTabId: this.targetTabId,
+      enableVision: this.enableVision,
+      enableCdp: this.enableCdp
+    };
+  }
+
+  /**
+   * 将当前调度器状态持久化到本地存储
+   */
+  async saveState() {
+    try {
+      await chrome.storage.local.set({
+        agentRunnerState: this.serializeState()
+      });
+    } catch (_) {}
+  }
+
+  /**
+   * 清理本地持久化的调度器状态
+   */
+  async clearState() {
+    try {
+      await chrome.storage.local.remove(['agentRunnerState']);
+    } catch (_) {}
+  }
+
+  /**
+   * 暂停任务
+   */
+  async pause() {
     if (this.status === 'running') {
       this.status = 'paused';
       this.emit('statusChange', { status: this.status });
       this.emit('log', { logType: 'info', text: '任务已挂起暂停' });
+      await this.saveState();
     }
   }
 
   /**
    * 恢复执行
    */
-  resume() {
+  async resume() {
     if (this.status === 'paused') {
       this.status = 'running';
       this.emit('statusChange', { status: this.status });
@@ -97,6 +137,7 @@ export class AgentRunner {
         this.pausePromiseResolve();
         this.pausePromiseResolve = null;
       }
+      await this.saveState();
     }
   }
 
@@ -111,6 +152,7 @@ export class AgentRunner {
     }
     this.emit('statusChange', { status: this.status });
     this.emit('log', { logType: 'warn', text: '任务已由用户手动停止' });
+    await this.clearState();
     await this.cleanup();
   }
 
@@ -391,17 +433,48 @@ export class AgentRunner {
 你的目标是根据用户提出的需求，自主通过对当前网页的元素识别、点击、输入与导航，一步步完成该任务。
 
 【操作原则】
-1. 每次循环，你都会收到当前页面的标题、地址以及可见的元素列表（每个元素带有唯一数字编号如 [1]，以及稳定语义指纹引用如 ref="button_xxx"）。
-2. 你需要分析当前页面的状态，推导出达成目标需要的下一个动作，并调用预设工具执行它。调用工具时请优先填入对应 index（也可填入 ref）。
+1. 每次循环，你都会收到当前页面的标题、地址以及可见的元素列表。每个元素都具备唯一的稳定语义指纹引用 ref（如 ref="button_3a1f4b"）以及当前帧编号 [1]。
+2. 调用 click_element 和 input_text 工具时，必须提供目标元素的 ref 属性（ref 是唯一持久主键，index 为辅助别名）。
 3. 如果任务目标涉及阅读文章、获取商品信息、提取页面数据或总结内容，请优先调用 read_page_content 工具提取结构化正文，避免在按钮间无序探索。
-4. 每次动作执行后，工具反馈中会包含真实的页面变动（如页面跳转、动态渲染更新或未产生可见变动），请根据实际反馈评估上一步是否真正生效。
+4. 每次动作执行后，工具反馈中会包含真实的局部变动或属性变化（如展开状态变化、局部更新、页面跳转等），请根据实际反馈评估上一步是否真正生效。
 5. 每次回复必须且仅能调用一个最关键的工具函数，严禁单次返回多个工具调用。
 6. 如果需要搜索内容，先找到输入框调用 input_text，将 press_enter 设为 true 或接着点击搜索按钮。
 7. 如果所需信息或按钮不在当前视口内，可以调用 scroll_page 向下滚动浏览。
 8. 当你确认用户的目标已经完成，必须调用 finish_task 工具并提供完整的总结答复。`;
 
     this.history.push({ role: 'system', content: systemPrompt });
+    await this.saveState();
 
+    return this.runLoop();
+  }
+
+  /**
+   * 从已保存的状态中反序列化恢复执行
+   */
+  async resumeExecution(savedState) {
+    this.status = 'running';
+    this.currentStep = savedState.currentStep || 0;
+    this.maxSteps = savedState.maxSteps || this.maxSteps;
+    this.currentGoal = savedState.currentGoal || '';
+    this.history = savedState.history || [];
+    this.targetTabId = savedState.targetTabId;
+    this.enableVision = savedState.enableVision ?? this.enableVision;
+    this.enableCdp = savedState.enableCdp ?? this.enableCdp;
+
+    this.emit('statusChange', { status: this.status });
+    this.emit('log', { logType: 'info', text: `已从断点恢复任务调度 (第 ${this.currentStep} 步)` });
+
+    if (this.enableCdp && this.targetTabId) {
+      await this.attachCdp(this.targetTabId);
+    }
+
+    return this.runLoop();
+  }
+
+  /**
+   * 调度引擎主循环
+   */
+  async runLoop() {
     let consecutiveNoToolCount = 0;
 
     try {
@@ -411,6 +484,7 @@ export class AgentRunner {
 
         this.currentStep++;
         this.emit('stepStart', { step: this.currentStep, maxSteps: this.maxSteps });
+        await this.saveState();
 
         // 标签页就绪校验
         let tab;
@@ -444,11 +518,25 @@ export class AgentRunner {
         const pagePrompt = this.formatElementsPrompt(scanResponse.data);
         const userPrompt = `用户目标: "${this.currentGoal}"\n\n${pagePrompt}\n\n请观察分析当前页面，决定下一步操作。`;
 
-        // 视觉多模态支持（若开启且模型支持，抓取视口截图）
+        // 视觉多模态支持（仅保留最新视口单帧截图，历史旧图降级为占位符）
         let messagePayload;
         if (this.enableVision) {
+          for (const item of this.history) {
+            if (Array.isArray(item.content)) {
+              item.content = item.content.map((part) => {
+                if (part && part.type === 'image_url') {
+                  return { type: 'text', text: '[历史视口截图已归档释放]' };
+                }
+                return part;
+              });
+              if (item.content.every((p) => p.type === 'text')) {
+                item.content = item.content.map((p) => p.text).join('\n');
+              }
+            }
+          }
+
           try {
-            const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 70 });
+            const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 65 });
             messagePayload = [
               { type: 'text', text: userPrompt },
               { type: 'image_url', image_url: { url: dataUrl } }
@@ -496,7 +584,6 @@ export class AgentRunner {
             role: 'user',
             content: '提示：请必须且仅能调用一个工具函数（如 click_element, input_text, scroll_page 等）来继续执行任务。'
           });
-          // 空转不计入用户步数
           this.currentStep--;
           continue;
         }
@@ -551,10 +638,13 @@ export class AgentRunner {
           content: execResult
         });
 
+        await this.saveState();
+
         if (primaryTool.name === 'finish_task') {
           this.status = 'completed';
           this.emit('statusChange', { status: this.status });
           this.emit('complete', { summary: execResult });
+          await this.clearState();
           await this.cleanup();
           return;
         }
@@ -566,12 +656,14 @@ export class AgentRunner {
         this.status = 'stopped';
         this.emit('statusChange', { status: this.status });
         this.emit('error', { message: `已达到最大执行步数限制 (${this.maxSteps} 步)` });
+        await this.clearState();
       }
     } catch (err) {
       if (this.status !== 'stopped') {
         this.status = 'error';
         this.emit('statusChange', { status: this.status });
         this.emit('error', { message: err.message || String(err) });
+        await this.clearState();
       }
     } finally {
       await this.cleanup();

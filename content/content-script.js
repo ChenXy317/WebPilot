@@ -227,17 +227,27 @@
   }
 
   /**
-   * 优先通过当前编号或稳定语义指纹检索目标元素
+   * 优先通过稳定语义指纹检索目标元素，并以编号作为辅助降级
    */
   function findRegisteredElement(index, ref) {
-    if (typeof index !== 'undefined' && index !== null && elementRegistry.has(Number(index))) {
-      const entry = elementRegistry.get(Number(index));
+    if (ref && refRegistry.has(ref)) {
+      const entry = refRegistry.get(ref);
       if (document.contains(entry.element)) {
         return entry;
       }
     }
-    if (ref && refRegistry.has(ref)) {
-      const entry = refRegistry.get(ref);
+
+    if (ref) {
+      const allCandidates = collectAllElements(document);
+      for (const el of allCandidates) {
+        if (computeElementRef(el) === ref && isElementVisible(el)) {
+          return { element: el, ref };
+        }
+      }
+    }
+
+    if (typeof index !== 'undefined' && index !== null && elementRegistry.has(Number(index))) {
+      const entry = elementRegistry.get(Number(index));
       if (document.contains(entry.element)) {
         return entry;
       }
@@ -246,19 +256,29 @@
   }
 
   /**
-   * 观察动作执行后的 DOM 变动与页面状态微差分
+   * 观察动作执行后的目标局部上下文与关键属性变动
    */
   async function observeActionResult(targetEl, actionFn) {
     const beforeUrl = window.location.href;
     const beforeTitle = document.title;
-    let mutationCount = 0;
 
+    const proximityContainer = targetEl.closest(
+      'form, dialog, [role="dialog"], [role="menu"], [role="listbox"], .dropdown, .modal, details'
+    ) || targetEl.parentElement || targetEl;
+
+    const beforeAria = targetEl.getAttribute('aria-expanded');
+    const beforeOpen = targetEl.hasAttribute('open');
+    const beforeClass = targetEl.className;
+    const beforeValue = ('value' in targetEl ? targetEl.value : null);
+    const beforeModals = document.querySelectorAll('dialog[open], [role="dialog"]:not([aria-hidden="true"]), .modal.show, .modal.active').length;
+
+    let localMutationCount = 0;
     const observer = new MutationObserver((mutations) => {
-      mutationCount += mutations.length;
+      localMutationCount += mutations.length;
     });
 
     try {
-      observer.observe(document.documentElement || document.body, {
+      observer.observe(proximityContainer, {
         childList: true,
         subtree: true,
         attributes: true,
@@ -268,28 +288,50 @@
 
     const actionOutput = await actionFn();
 
-    // 等待异步渲染或微任务更新
+    // 等待渲染或微任务完成
     await new Promise((r) => setTimeout(r, 350));
     observer.disconnect();
 
     const afterUrl = window.location.href;
     const afterTitle = document.title;
+    const afterAria = targetEl.getAttribute('aria-expanded');
+    const afterOpen = targetEl.hasAttribute('open');
+    const afterClass = targetEl.className;
+    const afterValue = ('value' in targetEl ? targetEl.value : null);
+    const afterModals = document.querySelectorAll('dialog[open], [role="dialog"]:not([aria-hidden="true"]), .modal.show, .modal.active').length;
+
     const details = [];
 
     if (afterUrl !== beforeUrl) {
-      details.push(`页面导航至: ${afterUrl}`);
+      details.push(`页面跳转至: ${afterUrl}`);
     }
     if (afterTitle !== beforeTitle) {
       details.push(`标题更新为: "${afterTitle}"`);
     }
-    if (mutationCount > 0) {
-      details.push(`检测到 ${mutationCount} 处页面动态渲染更新`);
+    if (beforeAria !== afterAria) {
+      details.push(`状态更新为 aria-expanded="${afterAria}"`);
+    }
+    if (beforeOpen !== afterOpen) {
+      details.push(`开启状态更新为 open=${afterOpen}`);
+    }
+    if (afterModals > beforeModals) {
+      details.push('检测到新弹窗/对话框出现');
+    }
+    if (beforeValue !== null && afterValue !== beforeValue) {
+      details.push(`输入值更新为: "${afterValue}"`);
+    }
+    if (beforeClass !== afterClass && details.length === 0) {
+      details.push('元素样式类名发生更新');
+    }
+    if (localMutationCount > 0 && details.length === 0) {
+      details.push(`目标局部区域更新 (${localMutationCount} 处)`);
     }
 
+    const hasChanged = details.length > 0;
     return {
       ...actionOutput,
-      hasMutations: mutationCount > 0 || afterUrl !== beforeUrl,
-      statusSummary: details.length > 0 ? details.join('；') : '未检测到页面产生可见变动'
+      hasMutations: hasChanged,
+      statusSummary: hasChanged ? details.join('；') : '未检测到目标区域状态或页面发生变化'
     };
   }
 
@@ -632,15 +674,28 @@
   }
 
   /**
-   * 提取页面可读正文或指定容器内容
+   * 提取页面主要结构化文本正文，主动过滤导航栏与周边噪声
    */
-  function extractPageContent(selector, maxLength = 3000) {
+  function extractPageContent(selector, maxLength = 4000) {
+    const noiseSelectors = [
+      'header', 'footer', 'nav', 'aside',
+      '.header', '.footer', '.nav', '.navbar', '.navigation', '.sidebar',
+      '.menu', '.breadcrumb', '.toolbar', '.advertisement', '.ad',
+      '[role="navigation"]', '[role="banner"]', '[role="contentinfo"]',
+      '[role="complementary"]', 'script', 'style', 'noscript', 'svg',
+      'iframe', '#webauto-markers-container', '.webauto-highlight-badge'
+    ];
+
     if (selector) {
       const target = document.querySelector(selector);
       if (!target) {
         throw new Error(`未匹配到指定选择器的页面元素: ${selector}`);
       }
-      const text = (target.innerText || target.textContent || '').replace(/[ \t]+/g, ' ').replace(/\n\s*\n/g, '\n').trim();
+      const clone = target.cloneNode(true);
+      for (const sel of noiseSelectors) {
+        clone.querySelectorAll(sel).forEach((n) => n.remove());
+      }
+      const text = (clone.innerText || clone.textContent || '').replace(/[ \t]+/g, ' ').replace(/\n\s*\n/g, '\n').trim();
       return {
         title: document.title,
         url: window.location.href,
@@ -649,25 +704,37 @@
       };
     }
 
-    const candidateSelectors = ['article', 'main', '[role="main"]', '.post-content', '.article-content', '#content'];
-    let mainEl = null;
+    const candidateSelectors = [
+      'article', 'main', '[role="main"]', '.post-content', '.article-content',
+      '.article-body', '.entry-content', '.main-content', '#content', '#main'
+    ];
+
+    let bestContainer = null;
+    let maxTextLen = 0;
+
     for (const sel of candidateSelectors) {
-      const found = document.querySelector(sel);
-      if (found && (found.innerText || '').length > 100) {
-        mainEl = found;
-        break;
+      const matches = document.querySelectorAll(sel);
+      for (const el of matches) {
+        const testClone = el.cloneNode(true);
+        for (const noise of noiseSelectors) {
+          testClone.querySelectorAll(noise).forEach((n) => n.remove());
+        }
+        const len = (testClone.innerText || testClone.textContent || '').trim().length;
+        if (len > maxTextLen && len > 80) {
+          maxTextLen = len;
+          bestContainer = testClone;
+        }
       }
     }
 
-    const container = mainEl || document.body;
-    const clone = container.cloneNode(true);
-
-    const noiseSelectors = ['script', 'style', 'noscript', 'svg', '#webauto-markers-container', '.webauto-highlight-badge'];
-    for (const sel of noiseSelectors) {
-      clone.querySelectorAll(sel).forEach((n) => n.remove());
+    const container = bestContainer || document.body.cloneNode(true);
+    if (!bestContainer) {
+      for (const sel of noiseSelectors) {
+        container.querySelectorAll(sel).forEach((n) => n.remove());
+      }
     }
 
-    const rawText = (clone.innerText || clone.textContent || '').replace(/[ \t]+/g, ' ').replace(/\n\s*\n/g, '\n').trim();
+    const rawText = (container.innerText || container.textContent || '').replace(/[ \t]+/g, ' ').replace(/\n\s*\n/g, '\n').trim();
     return {
       title: document.title,
       url: window.location.href,
