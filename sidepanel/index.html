@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebAuto Agent</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- 头部区域 -->
+    <header class="app-header">
+      <div class="logo-area">
+        <div class="logo-icon">A</div>
+        <div class="title-group">
+          <h1>WebAuto Agent</h1>
+          <span class="subtitle">智能网页自动化副驾驶</span>
+        </div>
+      </div>
+      <div class="header-actions">
+        <div id="status-badge" class="status-pill status-idle">
+          <span class="dot"></span>
+          <span class="text">就绪</span>
+        </div>
+        <button id="toggle-settings-btn" class="icon-btn" title="API 配置">
+          ⚙️
+        </button>
+      </div>
+    </header>
+
+    <!-- 可折叠 API 配置面板 -->
+    <section id="settings-panel" class="settings-drawer collapsed">
+      <div class="drawer-header">
+        <h3>接口配置 (兼容 OpenAI 规范)</h3>
+        <button id="close-settings-btn" class="close-btn">&times;</button>
+      </div>
+
+      <div class="form-group">
+        <label for="provider-select">服务商预设</label>
+        <select id="provider-select">
+          <option value="deepseek">DeepSeek 官方 (推荐, 性价比最高)</option>
+          <option value="openai">OpenAI 官方 (GPT-4o / GPT-4o-mini)</option>
+          <option value="siliconflow">硅基流动 SiliconFlow (Qwen/DeepSeek)</option>
+          <option value="ollama">Ollama (本地运行)</option>
+          <option value="custom">自定义 (第三方转发 / 中转站)</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label for="base-url-input">API Base URL</label>
+        <input type="text" id="base-url-input" placeholder="https://api.deepseek.com/v1" />
+      </div>
+
+      <div class="form-group">
+        <label for="api-key-input">API Key</label>
+        <div class="password-wrapper">
+          <input type="password" id="api-key-input" placeholder="sk-..." />
+          <button type="button" id="toggle-key-visibility" class="mini-btn">显示</button>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group half">
+          <label for="model-input">模型名称 (Model)</label>
+          <input type="text" id="model-input" placeholder="deepseek-chat" />
+        </div>
+        <div class="form-group half">
+          <label for="max-steps-input">步数上限</label>
+          <input type="number" id="max-steps-input" value="15" min="1" max="50" />
+        </div>
+      </div>
+
+      <div class="drawer-actions">
+        <button id="save-settings-btn" class="btn primary-btn">保存配置</button>
+      </div>
+    </section>
+
+    <!-- 任务输入与控制区 -->
+    <section class="task-input-section">
+      <div class="quick-prompts">
+        <span class="prompt-chip" data-prompt="在百度搜索“今日热点”并打开第一条搜索结果">百度搜索</span>
+        <span class="prompt-chip" data-prompt="向下滚动网页浏览更多内容，并总结核心要点">滚动并总结</span>
+        <span class="prompt-chip" data-prompt="帮我找到页面底部的关于我们链接并点击">关于我们</span>
+      </div>
+
+      <div class="input-wrapper">
+        <textarea id="task-goal-input" rows="3" placeholder="输入你想让 Agent 自动执行的目标，例如：在当前页面搜索框输入 Python 教程并点击搜索..."></textarea>
+      </div>
+
+      <div class="control-bar">
+        <button id="start-task-btn" class="btn primary-btn action-start">
+          <span class="icon">🚀</span> 开始执行
+        </button>
+        <button id="stop-task-btn" class="btn danger-btn action-stop" disabled>
+          <span class="icon">🛑</span> 停止任务
+        </button>
+      </div>
+    </section>
+
+    <!-- 执行状态与步骤时间轴 -->
+    <section class="timeline-section">
+      <div class="timeline-header">
+        <h2>执行动态与步骤记录</h2>
+        <span id="step-counter" class="step-pill">第 0 / 0 步</span>
+      </div>
+
+      <div id="logs-container" class="logs-stream">
+        <div class="empty-state">
+          <div class="empty-icon">🤖</div>
+          <p>输入任务并点击“开始执行”，Agent 将自动感知网页、决策并模拟交互。</p>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>

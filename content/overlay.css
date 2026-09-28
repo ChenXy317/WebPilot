@@ -1,0 +1,27 @@
+/**
+ * 页面可交互元素标注层样式
+ * 为网页中的每个可操作元素叠加高对比度数字角标（Set-of-Marks）
+ */
+
+.webauto-highlight-badge {
+  position: absolute !important;
+  z-index: 2147483647 !important;
+  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%) !important;
+  color: #ffffff !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  line-height: 1 !important;
+  padding: 2px 5px !important;
+  border-radius: 4px !important;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.3) !important;
+  pointer-events: none !important;
+  user-select: none !important;
+  transform: translate(-4px, -50%) !important;
+  transition: opacity 0.15s ease-in-out !important;
+}
+
+.webauto-highlight-active {
+  outline: 2px solid #6366f1 !important;
+  outline-offset: 2px !important;
+}
