@@ -84,6 +84,10 @@
     const title = el.getAttribute('title');
     if (title && title.trim()) return title.trim();
 
+    // 提取图像媒体替代文本
+    const alt = el.getAttribute('alt') || el.querySelector('img')?.getAttribute('alt');
+    if (alt && alt.trim()) return alt.trim();
+
     // 读取文本内容
     const text = el.innerText || el.textContent || '';
     return text.replace(/\s+/g, ' ').trim().slice(0, 80);
@@ -115,22 +119,26 @@
       '[onclick]'
     ].join(',');
 
-    const rawCandidates = Array.from(document.querySelectorAll(selector));
+    const candidateSet = new Set(document.querySelectorAll(selector));
 
-    // 额外补充具有手型指针 (cursor: pointer) 的交互性元素
-    const allDivsAndSpans = document.querySelectorAll('div, span, li, svg, i');
-    for (const node of allDivsAndSpans) {
-      if (rawCandidates.length > 300) break; // 性能上限保护
+    // 补充带有手型指针的交互元素，并过滤已被包含在父交互节点内的冗余子元素
+    const pointerNodes = document.querySelectorAll('div, span, li, p');
+    for (const node of pointerNodes) {
+      if (candidateSet.size >= 250) break;
+      if (candidateSet.has(node)) continue;
+
+      if (node.closest('button, a, select, textarea, [role="button"]')) continue;
+
       const style = window.getComputedStyle(node);
-      if (style.cursor === 'pointer' && !rawCandidates.includes(node)) {
-        rawCandidates.push(node);
+      if (style.cursor === 'pointer') {
+        candidateSet.add(node);
       }
     }
 
     let nextIndex = 1;
     const elementsData = [];
 
-    for (const el of rawCandidates) {
+    for (const el of candidateSet) {
       // 避免标记角标自身或容器内部
       if (container.contains(el)) continue;
 
@@ -187,7 +195,11 @@
     
     await new Promise((r) => setTimeout(r, 200));
 
-    // 派发原生鼠标事件
+    // 派发原生指针与鼠标事件
+    try {
+      el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, view: window }));
+    } catch (_) {}
+
     const mouseEvents = ['mouseover', 'mousedown', 'mouseup', 'click'];
     for (const eventName of mouseEvents) {
       el.dispatchEvent(
@@ -198,6 +210,10 @@
         })
       );
     }
+
+    try {
+      el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, view: window }));
+    } catch (_) {}
 
     if (typeof el.click === 'function') {
       el.click();
@@ -255,21 +271,23 @@
     if (pressEnter) {
       await new Promise((r) => setTimeout(r, 100));
       const enterKeyEvents = ['keydown', 'keypress', 'keyup'];
+      let enterPrevented = false;
       for (const ev of enterKeyEvents) {
-        el.dispatchEvent(
-          new KeyboardEvent(ev, {
-            key: 'Enter',
-            code: 'Enter',
-            keyCode: 13,
-            which: 13,
-            bubbles: true,
-            cancelable: true
-          })
-        );
+        const keyEv = new KeyboardEvent(ev, {
+          key: 'Enter',
+          code: 'Enter',
+          keyCode: 13,
+          which: 13,
+          charCode: 13,
+          bubbles: true,
+          cancelable: true
+        });
+        const dispatched = el.dispatchEvent(keyEv);
+        if (!dispatched) enterPrevented = true;
       }
 
-      // 触发表单提交
-      if (el.form) {
+      // 若未被前端逻辑拦截且存在关联表单，则触发表单提交
+      if (el.form && !enterPrevented) {
         el.form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       }
     }
