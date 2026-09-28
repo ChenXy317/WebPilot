@@ -30,6 +30,18 @@ export class AgentRunner {
 
     this.pausePromiseResolve = null;
     this.cdpAttached = false;
+
+    // 监听 CDP 外部断开事件
+    this.onDebuggerDetach = (source, reason) => {
+      if (source && source.tabId === this.targetTabId) {
+        this.cdpAttached = false;
+        this.emit('log', {
+          logType: 'warn',
+          text: `CDP 调试器已断开 (${reason || '外部断开'})，已自动切换至原生 DOM 模拟事件`
+        });
+      }
+    };
+    chrome.debugger.onDetach.addListener(this.onDebuggerDetach);
   }
 
   /**
@@ -181,6 +193,7 @@ export class AgentRunner {
     } else {
       for (const el of scanData.elements) {
         const parts = [`[${el.index}] <${el.tag}>`];
+        if (el.ref) parts.push(`ref="${el.ref}"`);
         if (el.type) parts.push(`type="${el.type}"`);
         if (el.role) parts.push(`role="${el.role}"`);
         if (el.placeholder) parts.push(`placeholder="${el.placeholder}"`);
@@ -212,14 +225,14 @@ export class AgentRunner {
 
       function listener(updatedTabId, changeInfo) {
         if (updatedTabId === tabId && changeInfo.status === 'complete') {
-          setTimeout(done, 500);
+          setTimeout(done, 600);
         }
       }
       chrome.tabs.onUpdated.addListener(listener);
 
       chrome.tabs.get(tabId).then((tab) => {
         if (tab && tab.status === 'complete') {
-          setTimeout(done, 400);
+          setTimeout(done, 500);
         }
       }).catch(() => done());
     });
@@ -233,14 +246,17 @@ export class AgentRunner {
 
     switch (name) {
       case 'click_element': {
+        const useCdp = this.cdpAttached;
         const res = await chrome.tabs.sendMessage(tabId, {
           action: 'CLICK',
-          index: args.index
+          index: args.index,
+          ref: args.ref,
+          skipDomClick: useCdp
         });
         if (!res.success) throw new Error(res.error || '点击元素失败');
 
-        // 若启用 CDP 且附着成功，补发真实物理指针单击
-        if (this.cdpAttached && res.data?.center) {
+        // 若启用且附着 CDP，仅由 CDP 派发系统级硬件单击
+        if (useCdp && res.data?.center) {
           const { x, y } = res.data.center;
           try {
             await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
@@ -257,7 +273,9 @@ export class AgentRunner {
               button: 'left',
               clickCount: 1
             });
-          } catch (_) {}
+          } catch (cdpErr) {
+            console.warn('CDP 物理点击派发异常:', cdpErr.message);
+          }
         }
 
         // 检测页面重载或导航
@@ -266,16 +284,21 @@ export class AgentRunner {
           const tabInfo = await chrome.tabs.get(tabId);
           if (tabInfo.status === 'loading') {
             await this.waitForPageReady(tabId);
+            if (this.enableCdp && !this.cdpAttached) {
+              await this.attachCdp(tabId);
+            }
           }
         } catch (_) {}
 
-        return res.data?.message || `已点击元素 [${args.index}]`;
+        const summary = res.data?.statusSummary ? `（${res.data.statusSummary}）` : '';
+        return `${res.data?.message || `已点击元素 [${args.index}]`}${summary}`;
       }
 
       case 'input_text': {
         const res = await chrome.tabs.sendMessage(tabId, {
           action: 'INPUT',
           index: args.index,
+          ref: args.ref,
           text: args.text,
           pressEnter: Boolean(args.press_enter)
         });
@@ -287,11 +310,26 @@ export class AgentRunner {
             const tabInfo = await chrome.tabs.get(tabId);
             if (tabInfo.status === 'loading') {
               await this.waitForPageReady(tabId);
+              if (this.enableCdp && !this.cdpAttached) {
+                await this.attachCdp(tabId);
+              }
             }
           } catch (_) {}
         }
 
-        return res.data?.message || `已在元素 [${args.index}] 中键入文本`;
+        const summary = res.data?.statusSummary ? `（${res.data.statusSummary}）` : '';
+        return `${res.data?.message || `已在元素 [${args.index}] 中键入文本`}${summary}`;
+      }
+
+      case 'read_page_content': {
+        const res = await chrome.tabs.sendMessage(tabId, {
+          action: 'EXTRACT_CONTENT',
+          selector: args.selector,
+          maxLength: args.max_length || 3000
+        });
+        if (!res.success) throw new Error(res.error || '提取页面文本失败');
+        const data = res.data;
+        return `【页面文本内容 (来源: "${data.title || '当前网页'}")】\n${data.content}`;
       }
 
       case 'scroll_page': {
@@ -311,6 +349,9 @@ export class AgentRunner {
         }
         await chrome.tabs.update(tabId, { url: targetUrl });
         await this.waitForPageReady(tabId);
+        if (this.enableCdp) {
+          await this.attachCdp(tabId);
+        }
         return `已跳转至: ${targetUrl}`;
       }
 
@@ -350,13 +391,14 @@ export class AgentRunner {
 你的目标是根据用户提出的需求，自主通过对当前网页的元素识别、点击、输入与导航，一步步完成该任务。
 
 【操作原则】
-1. 每次循环，你都会收到当前页面的标题、地址以及可见的元素列表（每个元素带有唯一数字方括号编号，如 [1] <button> 搜索）。
-2. 你需要分析当前页面的状态，推导出达成目标需要的下一个动作，并调用预设工具执行它。
-3. 每次回复必须且仅能调用一个最关键的工具函数，严禁单次返回多个工具调用。
-4. 如果需要搜索内容，先找到输入框调用 input_text，将 press_enter 设为 true 或接着点击搜索按钮。
-5. 如果所需信息或按钮不在当前视口内，可以调用 scroll_page 向下滚动浏览。
-6. 当你确认用户的目标已经完成，必须调用 finish_task 工具并提供完整的总结答复。
-7. 一次只执行一个最符合当前决策的关键动作，不要盲目重复已经失败的操作。`;
+1. 每次循环，你都会收到当前页面的标题、地址以及可见的元素列表（每个元素带有唯一数字编号如 [1]，以及稳定语义指纹引用如 ref="button_xxx"）。
+2. 你需要分析当前页面的状态，推导出达成目标需要的下一个动作，并调用预设工具执行它。调用工具时请优先填入对应 index（也可填入 ref）。
+3. 如果任务目标涉及阅读文章、获取商品信息、提取页面数据或总结内容，请优先调用 read_page_content 工具提取结构化正文，避免在按钮间无序探索。
+4. 每次动作执行后，工具反馈中会包含真实的页面变动（如页面跳转、动态渲染更新或未产生可见变动），请根据实际反馈评估上一步是否真正生效。
+5. 每次回复必须且仅能调用一个最关键的工具函数，严禁单次返回多个工具调用。
+6. 如果需要搜索内容，先找到输入框调用 input_text，将 press_enter 设为 true 或接着点击搜索按钮。
+7. 如果所需信息或按钮不在当前视口内，可以调用 scroll_page 向下滚动浏览。
+8. 当你确认用户的目标已经完成，必须调用 finish_task 工具并提供完整的总结答复。`;
 
     this.history.push({ role: 'system', content: systemPrompt });
 
@@ -540,6 +582,10 @@ export class AgentRunner {
    * 清理角标与调试状态
    */
   async cleanup() {
+    if (this.onDebuggerDetach) {
+      chrome.debugger.onDetach.removeListener(this.onDebuggerDetach);
+      this.onDebuggerDetach = null;
+    }
     if (this.targetTabId) {
       try {
         await chrome.tabs.sendMessage(this.targetTabId, { action: 'CLEAR_MARKERS' });

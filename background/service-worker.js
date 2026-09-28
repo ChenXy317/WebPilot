@@ -48,11 +48,23 @@ function broadcast(event) {
 }
 
 // 侧边栏端口长连接监听
-chrome.runtime.onConnect.addListener((port) => {
+chrome.runtime.onConnect.addListener(async (port) => {
   if (port.name === 'webauto-sidepanel') {
     connectedPorts.add(port);
 
-    // 握手时同步当前运行状态与历史流
+    // 握手时同步持久化历史流与状态
+    if (eventLogHistory.length === 0) {
+      try {
+        const stored = await chrome.storage.local.get(['eventLogHistory', 'currentGoal']);
+        if (stored.eventLogHistory && Array.isArray(stored.eventLogHistory)) {
+          eventLogHistory.push(...stored.eventLogHistory);
+        }
+        if (stored.currentGoal) {
+          currentGoal = stored.currentGoal;
+        }
+      } catch (_) {}
+    }
+
     port.postMessage({
       type: 'INIT_STATE',
       status: activeRunner ? activeRunner.status : 'idle',
@@ -71,21 +83,34 @@ chrome.runtime.onConnect.addListener((port) => {
             eventLogHistory.length = 0;
             currentGoal = msg.goal;
             currentConfig = msg.config;
+            await chrome.storage.local.set({ currentGoal, eventLogHistory: [] });
 
             if (activeRunner) {
               await activeRunner.stop();
             }
+
+            // 注册心跳闹钟防止休眠
+            chrome.alarms.create('webauto-keepalive', { periodInMinutes: 0.5 });
 
             activeRunner = new AgentRunner({
               apiConfig: msg.config.apiConfig,
               maxSteps: msg.config.maxSteps,
               enableVision: msg.config.enableVision,
               enableCdp: msg.config.enableCdp,
-              onEvent: (ev) => broadcast(ev)
+              onEvent: (ev) => {
+                broadcast(ev);
+                if (['complete', 'error', 'statusChange'].includes(ev.type)) {
+                  chrome.storage.local.set({ eventLogHistory });
+                  if (['completed', 'stopped', 'error'].includes(ev.status)) {
+                    chrome.alarms.clear('webauto-keepalive');
+                  }
+                }
+              }
             });
 
             // 异步启动，脱离侧边栏生命周期常驻运行
             activeRunner.start(msg.goal).catch((e) => {
+              chrome.alarms.clear('webauto-keepalive');
               broadcast({ type: 'error', message: e.message });
             });
             break;
@@ -99,17 +124,33 @@ chrome.runtime.onConnect.addListener((port) => {
             break;
 
           case 'STOP_TASK':
+            chrome.alarms.clear('webauto-keepalive');
             if (activeRunner) await activeRunner.stop();
             break;
 
           case 'CLEAR_HISTORY':
             eventLogHistory.length = 0;
+            await chrome.storage.local.remove(['eventLogHistory', 'currentGoal']);
             broadcast({ type: 'HISTORY_CLEARED' });
             break;
         }
       } catch (err) {
+        chrome.alarms.clear('webauto-keepalive');
         broadcast({ type: 'error', message: err.message });
       }
     });
+  }
+});
+
+// 定时心跳唤醒保活
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === 'webauto-keepalive') {
+    if (activeRunner && activeRunner.status === 'running') {
+      try {
+        await chrome.runtime.getPlatformInfo();
+      } catch (_) {}
+    } else {
+      chrome.alarms.clear('webauto-keepalive');
+    }
   }
 });

@@ -88,8 +88,9 @@ d:\Projects\WebPilot\
 
 | 工具名称 | 关键参数 | 功能说明 |
 | :--- | :--- | :--- |
-| `click_element` | `index: number` | 点击对应编号的按钮、链接或交互元素，支持同步 CDP 物理点击 |
-| `input_text` | `index: number, text: string, press_enter?: boolean` | 在目标输入框中填写文本，并可选择是否自动提交回车 |
+| `click_element` | `index: number, ref?: string` | 点击对应编号或稳定引用的按钮、链接或交互元素，CDP 模式下自动触发真实系统物理点击 |
+| `input_text` | `index: number, text: string, press_enter?: boolean, ref?: string` | 在目标输入框中填写文本，深度兼容受控组件并返回实际状态更新校验 |
+| `read_page_content` | `selector?: string, max_length?: number` | 提取当前页面或指定选择器下的结构化纯文本正文，用于阅读理解与内容总结 |
 | `scroll_page` | `direction: "up" \| "down", amount?: number` | 控制页面视口上下平滑滚动以感知更多内容 |
 | `navigate_to` | `url: string` | 跳转至指定 HTTP/HTTPS 网址并等待页面就绪 |
 | `wait_seconds` | `seconds: number` | 等待动态页面数据加载 |

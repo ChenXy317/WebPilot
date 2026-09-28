@@ -12,6 +12,7 @@
 
   // 维护当前活跃的元素与角标映射
   let elementRegistry = new Map();
+  let refRegistry = new Map();
   let markersContainer = null;
   let activeScrollListener = null;
 
@@ -41,6 +42,7 @@
       el.classList.remove('webauto-highlight-active');
     });
     elementRegistry.clear();
+    refRegistry.clear();
 
     if (activeScrollListener) {
       window.removeEventListener('scroll', activeScrollListener, true);
@@ -205,6 +207,93 @@
   }
 
   /**
+   * 生成元素的稳定语义指纹引用
+   */
+  function computeElementRef(el) {
+    const tag = el.tagName.toLowerCase();
+    const id = el.id ? `#${el.id.trim()}` : '';
+    const role = el.getAttribute('role') || '';
+    const name = el.getAttribute('name') || '';
+    const type = el.getAttribute('type') || '';
+    const textSample = (extractElementText(el) || '').slice(0, 15).replace(/\s+/g, '_');
+    const rawSig = `${tag}${id}${role ? `[role=${role}]` : ''}${name ? `[name=${name}]` : ''}${type ? `[type=${type}]` : ''}:${textSample}`;
+    let hash = 5381;
+    for (let i = 0; i < rawSig.length; i++) {
+      hash = ((hash << 5) + hash) + rawSig.charCodeAt(i);
+      hash |= 0;
+    }
+    const hexHash = Math.abs(hash).toString(16).slice(0, 6);
+    return `${tag}_${hexHash}`;
+  }
+
+  /**
+   * 优先通过当前编号或稳定语义指纹检索目标元素
+   */
+  function findRegisteredElement(index, ref) {
+    if (typeof index !== 'undefined' && index !== null && elementRegistry.has(Number(index))) {
+      const entry = elementRegistry.get(Number(index));
+      if (document.contains(entry.element)) {
+        return entry;
+      }
+    }
+    if (ref && refRegistry.has(ref)) {
+      const entry = refRegistry.get(ref);
+      if (document.contains(entry.element)) {
+        return entry;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 观察动作执行后的 DOM 变动与页面状态微差分
+   */
+  async function observeActionResult(targetEl, actionFn) {
+    const beforeUrl = window.location.href;
+    const beforeTitle = document.title;
+    let mutationCount = 0;
+
+    const observer = new MutationObserver((mutations) => {
+      mutationCount += mutations.length;
+    });
+
+    try {
+      observer.observe(document.documentElement || document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        characterData: true
+      });
+    } catch (_) {}
+
+    const actionOutput = await actionFn();
+
+    // 等待异步渲染或微任务更新
+    await new Promise((r) => setTimeout(r, 350));
+    observer.disconnect();
+
+    const afterUrl = window.location.href;
+    const afterTitle = document.title;
+    const details = [];
+
+    if (afterUrl !== beforeUrl) {
+      details.push(`页面导航至: ${afterUrl}`);
+    }
+    if (afterTitle !== beforeTitle) {
+      details.push(`标题更新为: "${afterTitle}"`);
+    }
+    if (mutationCount > 0) {
+      details.push(`检测到 ${mutationCount} 处页面动态渲染更新`);
+    }
+
+    return {
+      ...actionOutput,
+      hasMutations: mutationCount > 0 || afterUrl !== beforeUrl,
+      statusSummary: details.length > 0 ? details.join('；') : '未检测到页面产生可见变动'
+    };
+  }
+
+  /**
    * 同步更新已存在角标的视口坐标，防止滚动漂移
    */
   function updateBadgePositions() {
@@ -298,6 +387,7 @@
       const text = extractElementText(el);
 
       const itemIndex = nextIndex++;
+      const itemRef = computeElementRef(el);
 
       // 创建固定视口浮动角标
       const badge = document.createElement('div');
@@ -311,15 +401,20 @@
       const centerX = Math.round(rect.left + rect.width / 2);
       const centerY = Math.round(rect.top + rect.height / 2);
 
-      elementRegistry.set(itemIndex, {
+      const registryItem = {
         element: el,
         badge: badge,
         centerX: centerX,
-        centerY: centerY
-      });
+        centerY: centerY,
+        ref: itemRef
+      };
+
+      elementRegistry.set(itemIndex, registryItem);
+      refRegistry.set(itemRef, registryItem);
 
       elementsData.push({
         index: itemIndex,
+        ref: itemRef,
         tag: tagName,
         type: el.getAttribute('type') || '',
         text: text,
@@ -351,70 +446,81 @@
   /**
    * 执行拟人化点击操作
    */
-  async function performClick(index) {
-    const entry = elementRegistry.get(Number(index));
+  async function performClick(index, ref, skipDomClick = false) {
+    const entry = findRegisteredElement(index, ref);
     if (!entry || !entry.element) {
-      throw new Error(`未找到编号为 [${index}] 的元素，请确认该元素是否依然在当前视图内`);
+      throw new Error(`未找到编号为 [${index}] (ref: ${ref || '无'}) 的元素，请确认该元素是否依然在当前视图内`);
     }
 
     const el = entry.element;
     el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
     el.classList.add('webauto-highlight-active');
-
     await new Promise((r) => setTimeout(r, 150));
 
     const rect = el.getBoundingClientRect();
     const cx = rect.left + rect.width / 2;
     const cy = rect.top + rect.height / 2;
 
-    const eventInit = {
-      bubbles: true,
-      cancelable: true,
-      view: window,
-      clientX: cx,
-      clientY: cy
-    };
-
-    // 派发全套鼠标与指针事件序列
-    try {
-      el.dispatchEvent(new PointerEvent('pointerover', eventInit));
-      el.dispatchEvent(new PointerEvent('pointerenter', eventInit));
-      el.dispatchEvent(new PointerEvent('pointerdown', eventInit));
-    } catch (_) {}
-
-    el.dispatchEvent(new MouseEvent('mouseover', eventInit));
-    el.dispatchEvent(new MouseEvent('mousedown', eventInit));
-
-    if (typeof el.focus === 'function') {
-      el.focus();
+    if (skipDomClick) {
+      if (typeof el.focus === 'function') {
+        el.focus();
+      }
+      return {
+        success: true,
+        message: `已聚焦元素 [${index}] 并计算物理中心坐标`,
+        center: { x: Math.round(cx), y: Math.round(cy) }
+      };
     }
 
-    try {
-      el.dispatchEvent(new PointerEvent('pointerup', eventInit));
-    } catch (_) {}
+    return await observeActionResult(el, async () => {
+      const eventInit = {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: cx,
+        clientY: cy
+      };
 
-    el.dispatchEvent(new MouseEvent('mouseup', eventInit));
-    el.dispatchEvent(new MouseEvent('click', eventInit));
+      try {
+        el.dispatchEvent(new PointerEvent('pointerover', eventInit));
+        el.dispatchEvent(new PointerEvent('pointerenter', eventInit));
+        el.dispatchEvent(new PointerEvent('pointerdown', eventInit));
+      } catch (_) {}
 
-    if (typeof el.click === 'function') {
-      el.click();
-    }
+      el.dispatchEvent(new MouseEvent('mouseover', eventInit));
+      el.dispatchEvent(new MouseEvent('mousedown', eventInit));
 
-    await new Promise((r) => setTimeout(r, 200));
-    return {
-      success: true,
-      message: `成功点击元素 [${index}]`,
-      center: { x: Math.round(cx), y: Math.round(cy) }
-    };
+      if (typeof el.focus === 'function') {
+        el.focus();
+      }
+
+      try {
+        el.dispatchEvent(new PointerEvent('pointerup', eventInit));
+      } catch (_) {}
+
+      el.dispatchEvent(new MouseEvent('mouseup', eventInit));
+      el.dispatchEvent(new MouseEvent('click', eventInit));
+
+      if (typeof el.click === 'function') {
+        el.click();
+      }
+
+      await new Promise((r) => setTimeout(r, 100));
+      return {
+        success: true,
+        message: `已点击元素 [${index}]`,
+        center: { x: Math.round(cx), y: Math.round(cy) }
+      };
+    });
   }
 
   /**
    * 执行文本输入操作（深度兼容 React/Vue 受控组件及 contenteditable 现代富文本）
    */
-  async function performInput(index, text, pressEnter = false) {
-    const entry = elementRegistry.get(Number(index));
+  async function performInput(index, text, pressEnter = false, ref = null) {
+    const entry = findRegisteredElement(index, ref);
     if (!entry || !entry.element) {
-      throw new Error(`未找到编号为 [${index}] 的输入元素`);
+      throw new Error(`未找到编号为 [${index}] (ref: ${ref || '无'}) 的输入元素`);
     }
 
     const el = entry.element;
@@ -426,105 +532,147 @@
     }
     await new Promise((r) => setTimeout(r, 100));
 
-    const isTextArea = el instanceof HTMLTextAreaElement;
-    const isInput = el instanceof HTMLInputElement;
-    const isContentEditable = el.isContentEditable || el.getAttribute('contenteditable') === 'true';
+    return await observeActionResult(el, async () => {
+      const isTextArea = el instanceof HTMLTextAreaElement;
+      const isInput = el instanceof HTMLInputElement;
+      const isContentEditable = el.isContentEditable || el.getAttribute('contenteditable') === 'true';
 
-    if (isInput || isTextArea) {
-      // 派发 beforeinput 规范事件
-      try {
-        el.dispatchEvent(new InputEvent('beforeinput', {
-          bubbles: true,
-          cancelable: true,
-          inputType: 'insertText',
-          data: text
-        }));
-      } catch (_) {}
+      if (isInput || isTextArea) {
+        try {
+          el.dispatchEvent(new InputEvent('beforeinput', {
+            bubbles: true,
+            cancelable: true,
+            inputType: 'insertText',
+            data: text
+          }));
+        } catch (_) {}
 
-      // 重写原型 setter 触发框架受控状态更新
-      const proto = isTextArea ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-      const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-      if (nativeSetter) {
-        nativeSetter.call(el, text);
+        const proto = isTextArea ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+        const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+        if (nativeSetter) {
+          nativeSetter.call(el, text);
+        } else {
+          el.value = text;
+        }
+
+        try {
+          el.dispatchEvent(new InputEvent('input', {
+            bubbles: true,
+            cancelable: true,
+            inputType: 'insertText',
+            data: text
+          }));
+        } catch (_) {
+          el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+        }
+        el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+
+      } else if (isContentEditable) {
+        try {
+          el.dispatchEvent(new InputEvent('beforeinput', {
+            bubbles: true,
+            cancelable: true,
+            inputType: 'insertText',
+            data: text
+          }));
+        } catch (_) {}
+
+        const selection = window.getSelection();
+        if (selection && selection.rangeCount > 0) {
+          document.execCommand('selectAll', false, null);
+          document.execCommand('insertText', false, text);
+        } else {
+          el.textContent = text;
+        }
+
+        try {
+          el.dispatchEvent(new InputEvent('input', {
+            bubbles: true,
+            cancelable: true,
+            inputType: 'insertText',
+            data: text
+          }));
+        } catch (_) {
+          el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+        }
       } else {
         el.value = text;
-      }
-
-      // 派发标准 InputEvent 与 change 事件
-      try {
-        el.dispatchEvent(new InputEvent('input', {
-          bubbles: true,
-          cancelable: true,
-          inputType: 'insertText',
-          data: text
-        }));
-      } catch (_) {
         el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
-      }
-      el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-
-    } else if (isContentEditable) {
-      // 对富文本编辑器使用标准选区插入，保全虚拟 DOM 状态
-      try {
-        el.dispatchEvent(new InputEvent('beforeinput', {
-          bubbles: true,
-          cancelable: true,
-          inputType: 'insertText',
-          data: text
-        }));
-      } catch (_) {}
-
-      const selection = window.getSelection();
-      if (selection && selection.rangeCount > 0) {
-        document.execCommand('selectAll', false, null);
-        document.execCommand('insertText', false, text);
-      } else {
-        el.textContent = text;
+        el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
       }
 
-      try {
-        el.dispatchEvent(new InputEvent('input', {
-          bubbles: true,
-          cancelable: true,
-          inputType: 'insertText',
-          data: text
-        }));
-      } catch (_) {
-        el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+      if (pressEnter) {
+        await new Promise((r) => setTimeout(r, 100));
+        const enterEvents = ['keydown', 'keypress', 'keyup'];
+        let enterPrevented = false;
+        for (const ev of enterEvents) {
+          const keyEv = new KeyboardEvent(ev, {
+            key: 'Enter',
+            code: 'Enter',
+            keyCode: 13,
+            which: 13,
+            charCode: 13,
+            bubbles: true,
+            cancelable: true
+          });
+          const dispatched = el.dispatchEvent(keyEv);
+          if (!dispatched) enterPrevented = true;
+        }
+
+        if (el.form && !enterPrevented) {
+          el.form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        }
       }
-    } else {
-      el.value = text;
-      el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+
+      return {
+        success: true,
+        message: `已在元素 [${index}] 中输入文本`
+      };
+    });
+  }
+
+  /**
+   * 提取页面可读正文或指定容器内容
+   */
+  function extractPageContent(selector, maxLength = 3000) {
+    if (selector) {
+      const target = document.querySelector(selector);
+      if (!target) {
+        throw new Error(`未匹配到指定选择器的页面元素: ${selector}`);
+      }
+      const text = (target.innerText || target.textContent || '').replace(/[ \t]+/g, ' ').replace(/\n\s*\n/g, '\n').trim();
+      return {
+        title: document.title,
+        url: window.location.href,
+        content: text.slice(0, maxLength),
+        totalLength: text.length
+      };
     }
 
-    // 回车键联动支持
-    if (pressEnter) {
-      await new Promise((r) => setTimeout(r, 100));
-      const enterEvents = ['keydown', 'keypress', 'keyup'];
-      let enterPrevented = false;
-      for (const ev of enterEvents) {
-        const keyEv = new KeyboardEvent(ev, {
-          key: 'Enter',
-          code: 'Enter',
-          keyCode: 13,
-          which: 13,
-          charCode: 13,
-          bubbles: true,
-          cancelable: true
-        });
-        const dispatched = el.dispatchEvent(keyEv);
-        if (!dispatched) enterPrevented = true;
-      }
-
-      if (el.form && !enterPrevented) {
-        el.form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    const candidateSelectors = ['article', 'main', '[role="main"]', '.post-content', '.article-content', '#content'];
+    let mainEl = null;
+    for (const sel of candidateSelectors) {
+      const found = document.querySelector(sel);
+      if (found && (found.innerText || '').length > 100) {
+        mainEl = found;
+        break;
       }
     }
 
+    const container = mainEl || document.body;
+    const clone = container.cloneNode(true);
+
+    const noiseSelectors = ['script', 'style', 'noscript', 'svg', '#webauto-markers-container', '.webauto-highlight-badge'];
+    for (const sel of noiseSelectors) {
+      clone.querySelectorAll(sel).forEach((n) => n.remove());
+    }
+
+    const rawText = (clone.innerText || clone.textContent || '').replace(/[ \t]+/g, ' ').replace(/\n\s*\n/g, '\n').trim();
     return {
-      success: true,
-      message: `成功在元素 [${index}] 中输入内容: "${text}"`
+      title: document.title,
+      url: window.location.href,
+      content: rawText.slice(0, maxLength),
+      totalLength: rawText.length
     };
   }
 
@@ -558,13 +706,18 @@
             break;
 
           case 'CLICK':
-            const clickRes = await performClick(request.index);
+            const clickRes = await performClick(request.index, request.ref, Boolean(request.skipDomClick));
             sendResponse({ success: true, data: clickRes });
             break;
 
           case 'INPUT':
-            const inputRes = await performInput(request.index, request.text, request.pressEnter);
+            const inputRes = await performInput(request.index, request.text, request.pressEnter, request.ref);
             sendResponse({ success: true, data: inputRes });
+            break;
+
+          case 'EXTRACT_CONTENT':
+            const contentRes = extractPageContent(request.selector, request.maxLength);
+            sendResponse({ success: true, data: contentRes });
             break;
 
           case 'SCROLL':
