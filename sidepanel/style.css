@@ -6,6 +6,7 @@
 :root {
   --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  --font-thought: "JetBrains Mono", Consolas, Menlo, Monaco, ui-monospace, -apple-system, sans-serif;
   --transition-fast: 0.15s ease;
   --transition-smooth: 0.25s cubic-bezier(0.16, 1, 0.3, 1);
   --radius-xs: 4px;
@@ -138,15 +139,27 @@ body {
   color: var(--text-primary);
 }
 
-.brand-tag {
-  font-size: 9px;
-  font-weight: 700;
-  text-transform: uppercase;
-  padding: 1px 4px;
+/* 当前生效的模型与供应商提示徽章 */
+.active-model-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  padding: 2px 6px;
   border-radius: var(--radius-xs);
-  background-color: var(--bg-accent-subtle);
-  color: var(--accent);
-  letter-spacing: 0.5px;
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+}
+
+.active-model-tag:hover {
+  color: var(--text-secondary);
+  border-color: var(--border-strong);
 }
 
 /* 运行状态指示徽章 */
@@ -374,6 +387,99 @@ body {
   border-color: var(--border-strong);
 }
 
+/* 供应商标题栏内联操作按钮 */
+.form-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.action-btn-inline-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sub-button-compact {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  border-radius: var(--radius-xs);
+  padding: 1px 7px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.sub-button-compact:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.sub-button-compact.danger:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+  background-color: var(--danger-subtle);
+}
+
+/* 供应商所属模型标签容器与标签 */
+.models-tags-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+  max-height: 100px;
+  overflow-y: auto;
+  padding: 2px 0;
+}
+
+.model-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  padding: 2px 7px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.model-tag:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.model-tag.active {
+  background-color: var(--bg-accent-subtle);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.model-tag-del-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.model-tag-del-btn:hover {
+  color: var(--danger);
+  background-color: var(--danger-subtle);
+}
+
 .form-item-check {
   display: flex;
   align-items: center;
@@ -489,34 +595,155 @@ body {
   word-break: break-word;
 }
 
-/* 2. 模型回复：直接输出排版 */
+/* 模型回复排版容器：思考过程与正文具有明确的垂直间距 */
 .assistant-response {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
   width: 100%;
 }
 
-.model-thought-box {
+/* 思考过程折叠卡片 */
+.model-thought-card {
+  display: flex;
+  flex-direction: column;
   background-color: var(--bg-thought);
   border: 1px solid var(--border-subtle);
-  border-left: 3px solid var(--text-tertiary);
-  border-radius: var(--radius-xs);
-  padding: 8px 10px;
-  font-size: 12px;
-  color: var(--text-secondary);
-  font-style: italic;
-  white-space: pre-wrap;
-  word-break: break-word;
-  transition: all var(--transition-fast);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
+.model-thought-card:hover {
+  border-color: var(--border-strong);
+}
+
+/* 思考卡片头部交互栏 */
+.thought-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  user-select: none;
+  font-family: var(--font-family);
+  color: var(--text-tertiary);
+  transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+
+.thought-card-header:hover {
+  background-color: var(--bg-card-hover);
+  color: var(--text-secondary);
+}
+
+.thought-header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.thought-icon {
+  width: 13px;
+  height: 13px;
+  stroke: currentColor;
+  flex-shrink: 0;
+}
+
+.thought-title {
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.thought-status-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-tertiary);
+}
+
+.thought-status-badge.thinking {
+  color: var(--accent);
+  border-color: var(--accent);
+  background-color: var(--bg-accent-subtle);
+  animation: pulse-thought 1.5s infinite ease-in-out;
+}
+
+/* 思考状态脉冲动画 */
+@keyframes pulse-thought {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.thought-header-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.thought-toggle-hint {
+  font-size: 11px;
+}
+
+.thought-chevron {
+  width: 12px;
+  height: 12px;
+  stroke: currentColor;
+  transition: transform var(--transition-smooth);
+}
+
+/* 折叠状态 */
+.model-thought-card.is-collapsed .thought-card-body {
+  display: none;
+}
+
+.model-thought-card.is-collapsed .thought-chevron {
+  transform: rotate(-90deg);
+}
+
+/* 思考卡片主体内容：更细的字重、更小巧的字号、专属等宽细字体 */
+.thought-card-body {
+  border-top: 1px dashed var(--border-subtle);
+  padding: 8px 10px;
+  background-color: rgba(0, 0, 0, 0.015);
+}
+
+[data-theme="dark"] .thought-card-body {
+  background-color: rgba(255, 255, 255, 0.015);
+}
+
+.thought-content-inner {
+  font-family: var(--font-thought);
+  font-size: 11.5px;
+  font-weight: 300;
+  letter-spacing: 0.01em;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+/* 独立回复正文内容：标准字重、阅读主字体，与思考卡片清晰隔开 */
 .model-text-direct {
+  font-family: var(--font-family);
   font-size: 13px;
-  line-height: 1.6;
+  font-weight: 400;
+  line-height: 1.65;
   color: var(--text-primary);
   white-space: pre-wrap;
   word-break: break-word;
+  padding: 2px 2px;
 }
 
 /* 3. 工具调用与状态：结构化框起来展示 */
@@ -644,6 +871,12 @@ body {
   resize: none;
   max-height: 140px;
   min-height: 22px;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.input-card textarea::-webkit-scrollbar {
+  display: none;
 }
 
 .input-card textarea::placeholder {

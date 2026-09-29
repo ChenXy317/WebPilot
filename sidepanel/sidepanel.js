@@ -1,38 +1,15 @@
 /**
  * 侧边栏用户交互与通信控制器
- * 维护后台长连接会话、明暗主题切换、置底输入框自适应以及结构化流式消息渲染
+ * 维护后台长连接会话、供应商与多模型配置管理、明暗主题切换及结构化流式消息渲染
  */
-
-const PROVIDER_PRESETS = {
-  deepseek: {
-    baseUrl: 'https://api.deepseek.com/v1',
-    model: 'deepseek-chat'
-  },
-  openai: {
-    baseUrl: 'https://api.openai.com/v1',
-    model: 'gpt-4o'
-  },
-  siliconflow: {
-    baseUrl: 'https://api.siliconflow.cn/v1',
-    model: 'Qwen/Qwen2.5-72B-Instruct'
-  },
-  ollama: {
-    baseUrl: 'http://localhost:11434/v1',
-    model: 'qwen2.5:latest'
-  },
-  custom: {
-    baseUrl: '',
-    model: ''
-  }
-};
 
 document.addEventListener('DOMContentLoaded', async () => {
   // DOM 元素引用
   const streamContainer = document.getElementById('conversation-stream');
-  const emptyState = document.getElementById('empty-state');
   const statusBadge = document.getElementById('status-badge');
   const statusText = statusBadge.querySelector('.indicator-text');
   const stepBadge = document.getElementById('step-badge');
+  const activeModelTag = document.getElementById('active-model-tag');
 
   const themeToggleBtn = document.getElementById('theme-toggle-btn');
   const clearHistoryBtn = document.getElementById('clear-history-btn');
@@ -41,10 +18,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   const settingsPanel = document.getElementById('settings-panel');
 
   const providerSelect = document.getElementById('provider-select');
+  const addProviderBtn = document.getElementById('add-provider-btn');
+  const deleteProviderBtn = document.getElementById('delete-provider-btn');
+  const providerNameInput = document.getElementById('provider-name-input');
   const baseUrlInput = document.getElementById('base-url-input');
   const apiKeyInput = document.getElementById('api-key-input');
   const toggleKeyBtn = document.getElementById('toggle-key-btn');
-  const modelInput = document.getElementById('model-input');
+  const modelSelect = document.getElementById('model-select');
+  const newModelInput = document.getElementById('new-model-input');
+  const addModelBtn = document.getElementById('add-model-btn');
+  const modelsTagsContainer = document.getElementById('models-tags-container');
   const maxStepsInput = document.getElementById('max-steps-input');
   const visionToggle = document.getElementById('vision-toggle');
   const cdpToggle = document.getElementById('cdp-toggle');
@@ -58,9 +41,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   const pauseBtnText = document.getElementById('pause-btn-text');
   const stopBtn = document.getElementById('stop-btn');
 
-  // 当前活跃的模型消息流节点与工具节点缓存
+  // 当前活跃的模型消息流节点、思考折叠卡片与工具节点缓存
   let currentModelNode = null;
-  let currentThoughtBox = null;
+  let currentThoughtCard = null;
+  let currentThoughtInner = null;
+  let currentThoughtStatus = null;
+  let currentThoughtHint = null;
   let currentDirectTextBox = null;
   const activeToolCards = new Map();
 
@@ -80,43 +66,287 @@ document.addEventListener('DOMContentLoaded', async () => {
     await chrome.storage.local.set({ theme: activeTheme });
   });
 
-  // 2. 读取已保存设置
-  const stored = await chrome.storage.local.get(['apiConfig', 'maxSteps', 'enableVision', 'enableCdp']);
-  const savedConfig = stored.apiConfig || {
-    provider: 'deepseek',
-    baseUrl: PROVIDER_PRESETS.deepseek.baseUrl,
-    apiKey: '',
-    model: PROVIDER_PRESETS.deepseek.model
-  };
-  const savedMaxSteps = stored.maxSteps || 20;
-  const savedVision = stored.enableVision || false;
-  const savedCdp = stored.enableCdp || false;
+  // 2. 供应商与多模型配置存储管理
+  const stored = await chrome.storage.local.get([
+    'customProviders',
+    'activeProviderId',
+    'apiConfig',
+    'maxSteps',
+    'enableVision',
+    'enableCdp'
+  ]);
 
-  providerSelect.value = savedConfig.provider || 'deepseek';
-  baseUrlInput.value = savedConfig.baseUrl || '';
-  apiKeyInput.value = savedConfig.apiKey || '';
-  modelInput.value = savedConfig.model || '';
-  maxStepsInput.value = savedMaxSteps;
-  visionToggle.checked = savedVision;
-  cdpToggle.checked = savedCdp;
+  let providers = stored.customProviders;
+  let activeProviderId = stored.activeProviderId;
 
-  // 抽屉展开/折叠
-  settingsToggleBtn.addEventListener('click', () => {
-    settingsPanel.classList.toggle('collapsed');
-  });
+  // 自动迁移或初始化初始供应商
+  if (!Array.isArray(providers) || providers.length === 0) {
+    if (stored.apiConfig && (stored.apiConfig.baseUrl || stored.apiConfig.apiKey)) {
+      const oldModel = (stored.apiConfig.model || 'deepseek-chat').trim();
+      providers = [
+        {
+          id: 'provider_default',
+          name: stored.apiConfig.provider ? stored.apiConfig.provider.toUpperCase() : '默认供应商',
+          baseUrl: stored.apiConfig.baseUrl || 'https://api.deepseek.com/v1',
+          apiKey: stored.apiConfig.apiKey || '',
+          models: [oldModel],
+          selectedModel: oldModel
+        }
+      ];
+    } else {
+      providers = [
+        {
+          id: 'provider_deepseek',
+          name: 'DeepSeek',
+          baseUrl: 'https://api.deepseek.com/v1',
+          apiKey: '',
+          models: ['deepseek-chat', 'deepseek-reasoner'],
+          selectedModel: 'deepseek-chat'
+        }
+      ];
+    }
+    activeProviderId = providers[0].id;
+  }
 
-  settingsCloseBtn.addEventListener('click', () => {
-    settingsPanel.classList.add('collapsed');
-  });
+  if (!activeProviderId || !providers.some((p) => p.id === activeProviderId)) {
+    activeProviderId = providers[0].id;
+  }
 
+  maxStepsInput.value = stored.maxSteps || 20;
+  visionToggle.checked = stored.enableVision || false;
+  cdpToggle.checked = stored.enableCdp || false;
+
+  /**
+   * 获取当前选中的供应商配置对象
+   */
+  function getCurrentProvider() {
+    return providers.find((p) => p.id === activeProviderId) || providers[0];
+  }
+
+  /**
+   * 渲染供应商下拉选择项
+   */
+  function renderProviderOptions() {
+    providerSelect.innerHTML = '';
+    for (const p of providers) {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.name || '未命名供应商';
+      if (p.id === activeProviderId) {
+        opt.selected = true;
+      }
+      providerSelect.appendChild(opt);
+    }
+  }
+
+  /**
+   * 渲染指定供应商下的模型选择与管理标签
+   */
+  function renderModelControls(currentProvider) {
+    modelSelect.innerHTML = '';
+    const models = Array.isArray(currentProvider.models) && currentProvider.models.length > 0
+      ? currentProvider.models
+      : ['deepseek-chat'];
+
+    if (!models.includes(currentProvider.selectedModel)) {
+      currentProvider.selectedModel = models[0];
+    }
+
+    for (const m of models) {
+      const opt = document.createElement('option');
+      opt.value = m;
+      opt.textContent = m;
+      if (m === currentProvider.selectedModel) {
+        opt.selected = true;
+      }
+      modelSelect.appendChild(opt);
+    }
+
+    // 渲染管理标签列表
+    modelsTagsContainer.innerHTML = '';
+    for (const m of models) {
+      const tag = document.createElement('div');
+      tag.className = `model-tag${m === currentProvider.selectedModel ? ' active' : ''}`;
+
+      const nameSpan = document.createElement('span');
+      nameSpan.textContent = m;
+      nameSpan.title = '点击设为当前生效模型';
+      nameSpan.addEventListener('click', () => {
+        currentProvider.selectedModel = m;
+        renderModelControls(currentProvider);
+        updateHeaderModelBadge();
+      });
+
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'model-tag-del-btn';
+      delBtn.textContent = '×';
+      delBtn.title = '移除此模型';
+      delBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (currentProvider.models.length <= 1) {
+          return;
+        }
+        currentProvider.models = currentProvider.models.filter((item) => item !== m);
+        if (currentProvider.selectedModel === m) {
+          currentProvider.selectedModel = currentProvider.models[0];
+        }
+        renderModelControls(currentProvider);
+        updateHeaderModelBadge();
+      });
+
+      tag.appendChild(nameSpan);
+      tag.appendChild(delBtn);
+      modelsTagsContainer.appendChild(tag);
+    }
+  }
+
+  /**
+   * 同步更新顶栏模型指示标签
+   */
+  function updateHeaderModelBadge() {
+    const cp = getCurrentProvider();
+    if (!cp) {
+      activeModelTag.classList.add('hidden');
+      return;
+    }
+    activeModelTag.classList.remove('hidden');
+    activeModelTag.textContent = `${cp.name} / ${cp.selectedModel || cp.models?.[0] || '默认'}`;
+  }
+
+  /**
+   * 填充当前供应商的输入框与关联模型
+   */
+  function populateCurrentProviderFields() {
+    const cp = getCurrentProvider();
+    if (!cp) return;
+
+    providerNameInput.value = cp.name || '';
+    baseUrlInput.value = cp.baseUrl || '';
+    apiKeyInput.value = cp.apiKey || '';
+
+    renderModelControls(cp);
+    updateHeaderModelBadge();
+  }
+
+  // 初始化设置表单展示
+  renderProviderOptions();
+  populateCurrentProviderFields();
+
+  // 监听切换供应商
   providerSelect.addEventListener('change', (e) => {
-    const preset = PROVIDER_PRESETS[e.target.value];
-    if (preset) {
-      if (preset.baseUrl) baseUrlInput.value = preset.baseUrl;
-      if (preset.model) modelInput.value = preset.model;
+    const prev = getCurrentProvider();
+    if (prev) {
+      prev.name = providerNameInput.value.trim() || '未命名供应商';
+      prev.baseUrl = baseUrlInput.value.trim();
+      prev.apiKey = apiKeyInput.value.trim();
+    }
+
+    activeProviderId = e.target.value;
+    populateCurrentProviderFields();
+  });
+
+  // 监听供应商名称实时更新
+  providerNameInput.addEventListener('input', (e) => {
+    const cp = getCurrentProvider();
+    if (cp) {
+      cp.name = e.target.value;
+      const opt = providerSelect.querySelector(`option[value="${cp.id}"]`);
+      if (opt) opt.textContent = cp.name || '未命名供应商';
+      updateHeaderModelBadge();
     }
   });
 
+  baseUrlInput.addEventListener('input', (e) => {
+    const cp = getCurrentProvider();
+    if (cp) cp.baseUrl = e.target.value;
+  });
+
+  apiKeyInput.addEventListener('input', (e) => {
+    const cp = getCurrentProvider();
+    if (cp) cp.apiKey = e.target.value;
+  });
+
+  // 新建供应商
+  addProviderBtn.addEventListener('click', () => {
+    const cur = getCurrentProvider();
+    if (cur) {
+      cur.name = providerNameInput.value.trim() || '未命名供应商';
+      cur.baseUrl = baseUrlInput.value.trim();
+      cur.apiKey = apiKeyInput.value.trim();
+    }
+
+    const newId = `p_${Date.now()}`;
+    const newProvider = {
+      id: newId,
+      name: `新供应商 ${providers.length + 1}`,
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: '',
+      models: ['gpt-4o'],
+      selectedModel: 'gpt-4o'
+    };
+
+    providers.push(newProvider);
+    activeProviderId = newId;
+
+    renderProviderOptions();
+    populateCurrentProviderFields();
+  });
+
+  // 删除当前供应商
+  deleteProviderBtn.addEventListener('click', () => {
+    if (providers.length <= 1) {
+      return;
+    }
+
+    providers = providers.filter((p) => p.id !== activeProviderId);
+    activeProviderId = providers[0].id;
+
+    renderProviderOptions();
+    populateCurrentProviderFields();
+  });
+
+  // 生效模型下拉框变更
+  modelSelect.addEventListener('change', (e) => {
+    const cp = getCurrentProvider();
+    if (cp) {
+      cp.selectedModel = e.target.value;
+      renderModelControls(cp);
+      updateHeaderModelBadge();
+    }
+  });
+
+  // 添加模型逻辑
+  function handleAddNewModel() {
+    const modelName = newModelInput.value.trim();
+    if (!modelName) return;
+
+    const cp = getCurrentProvider();
+    if (!cp) return;
+
+    if (!Array.isArray(cp.models)) {
+      cp.models = [];
+    }
+
+    if (!cp.models.includes(modelName)) {
+      cp.models.push(modelName);
+    }
+    cp.selectedModel = modelName;
+
+    newModelInput.value = '';
+    renderModelControls(cp);
+    updateHeaderModelBadge();
+  }
+
+  addModelBtn.addEventListener('click', handleAddNewModel);
+  newModelInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleAddNewModel();
+    }
+  });
+
+  // API Key 密码明暗查看
   toggleKeyBtn.addEventListener('click', () => {
     if (apiKeyInput.type === 'password') {
       apiKeyInput.type = 'text';
@@ -127,43 +357,55 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  // 设置面板展开与折叠控制
+  settingsToggleBtn.addEventListener('click', () => {
+    settingsPanel.classList.toggle('collapsed');
+  });
+
+  settingsCloseBtn.addEventListener('click', () => {
+    settingsPanel.classList.add('collapsed');
+  });
+
+  // 保存设置按钮
   saveSettingsBtn.addEventListener('click', async () => {
-    const config = {
-      provider: providerSelect.value,
-      baseUrl: baseUrlInput.value.trim(),
-      apiKey: apiKeyInput.value.trim(),
-      model: modelInput.value.trim()
-    };
+    const cp = getCurrentProvider();
+    if (cp) {
+      cp.name = providerNameInput.value.trim() || '未命名供应商';
+      cp.baseUrl = baseUrlInput.value.trim();
+      cp.apiKey = apiKeyInput.value.trim();
+    }
+
     const maxSteps = parseInt(maxStepsInput.value, 10) || 20;
     const enableVision = visionToggle.checked;
     const enableCdp = cdpToggle.checked;
 
     await chrome.storage.local.set({
-      apiConfig: config,
+      customProviders: providers,
+      activeProviderId: activeProviderId,
+      apiConfig: {
+        baseUrl: (cp?.baseUrl || '').trim(),
+        apiKey: (cp?.apiKey || '').trim(),
+        model: (cp?.selectedModel || cp?.models?.[0] || 'deepseek-chat').trim()
+      },
       maxSteps,
       enableVision,
       enableCdp
     });
 
+    renderProviderOptions();
+    populateCurrentProviderFields();
     settingsPanel.classList.add('collapsed');
   });
 
-  // 3. 消息流渲染辅助函数
-  function removeEmptyState() {
-    if (emptyState && emptyState.parentNode) {
-      emptyState.remove();
-    }
-  }
-
+  // 3. 消息流渲染与排版函数
   function scrollToBottom() {
     streamContainer.scrollTop = streamContainer.scrollHeight;
   }
 
   /**
-   * 渲染用户消息：明确框起来展示
+   * 渲染用户消息
    */
   function appendUserMessage(text) {
-    removeEmptyState();
     const container = document.createElement('div');
     container.className = 'user-query-container stream-node';
 
@@ -177,39 +419,99 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   /**
-   * 确保存在当前活动模型响应容器（模型回复直接自然排版，不加大外框）
+   * 确保存在当前活动模型响应容器
    */
   function ensureModelResponseNode() {
-    removeEmptyState();
     if (!currentModelNode) {
       currentModelNode = document.createElement('div');
       currentModelNode.className = 'assistant-response stream-node';
       streamContainer.appendChild(currentModelNode);
-      currentThoughtBox = null;
+      currentThoughtCard = null;
+      currentThoughtInner = null;
+      currentThoughtStatus = null;
+      currentThoughtHint = null;
       currentDirectTextBox = null;
     }
     return currentModelNode;
   }
 
   /**
-   * 追加流式模型思考内容
+   * 更新思考状态标签为已完成
+   */
+  function finishThinkingState() {
+    if (currentThoughtStatus && currentThoughtStatus.classList.contains('thinking')) {
+      currentThoughtStatus.classList.remove('thinking');
+      currentThoughtStatus.textContent = '已完成思考';
+    }
+  }
+
+  /**
+   * 追加流式模型思考内容至可折叠卡片
    */
   function appendThoughtChunk(text) {
     const parent = ensureModelResponseNode();
-    if (!currentThoughtBox) {
-      currentThoughtBox = document.createElement('div');
-      currentThoughtBox.className = 'model-thought-box';
-      currentThoughtBox.textContent = '思考过程: ';
-      parent.appendChild(currentThoughtBox);
+    if (!currentThoughtCard) {
+      const card = document.createElement('div');
+      card.className = 'model-thought-card';
+
+      const header = document.createElement('button');
+      header.type = 'button';
+      header.className = 'thought-card-header';
+      header.setAttribute('aria-label', '展开或收起思考过程');
+
+      header.innerHTML = `
+        <div class="thought-header-left">
+          <svg class="thought-icon" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-2.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7z"></path>
+            <path d="M9 21h6"></path>
+          </svg>
+          <span class="thought-title">深度思考</span>
+          <span class="thought-status-badge thinking">思考中...</span>
+        </div>
+        <div class="thought-header-right">
+          <span class="thought-toggle-hint">收起</span>
+          <svg class="thought-chevron" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </div>
+      `;
+
+      const body = document.createElement('div');
+      body.className = 'thought-card-body';
+
+      const inner = document.createElement('div');
+      inner.className = 'thought-content-inner';
+      body.appendChild(inner);
+
+      card.appendChild(header);
+      card.appendChild(body);
+
+      // 点击头部栏切换展开/收起状态
+      header.addEventListener('click', () => {
+        const isCollapsed = card.classList.toggle('is-collapsed');
+        const hint = header.querySelector('.thought-toggle-hint');
+        if (hint) {
+          hint.textContent = isCollapsed ? '展开' : '收起';
+        }
+      });
+
+      parent.appendChild(card);
+
+      currentThoughtCard = card;
+      currentThoughtInner = inner;
+      currentThoughtStatus = header.querySelector('.thought-status-badge');
+      currentThoughtHint = header.querySelector('.thought-toggle-hint');
     }
-    currentThoughtBox.textContent += text;
+
+    currentThoughtInner.textContent += text;
     scrollToBottom();
   }
 
   /**
-   * 追加流式模型正文消息（直接输出）
+   * 追加流式模型正文消息并与思考过程隔开排版
    */
   function appendContentChunk(text) {
+    finishThinkingState();
     const parent = ensureModelResponseNode();
     if (!currentDirectTextBox) {
       currentDirectTextBox = document.createElement('div');
@@ -221,13 +523,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   /**
-   * 渲染工具信息卡片：明确框起来展示
+   * 渲染工具信息卡片
    */
   function createToolCard({ id, name, args }) {
-    removeEmptyState();
-    // 开启工具卡片时重置当前模型文本流容器
+    finishThinkingState();
     currentModelNode = null;
-    currentThoughtBox = null;
+    currentThoughtCard = null;
+    currentThoughtInner = null;
+    currentThoughtStatus = null;
+    currentThoughtHint = null;
     currentDirectTextBox = null;
 
     const card = document.createElement('div');
@@ -260,11 +564,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     card.appendChild(body);
     streamContainer.appendChild(card);
     activeToolCards.set(id, { card, badge, body });
+
     scrollToBottom();
   }
 
   /**
-   * 更新工具卡片执行结果
+   * 更新工具卡片执行状态与结果
    */
   function updateToolCard({ id, success, result }) {
     const entry = activeToolCards.get(id);
@@ -276,13 +581,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     const resBox = document.createElement('div');
     resBox.className = `tool-result-box ${success ? 'success' : 'error'}`;
-    resBox.textContent = result || (success ? '执行完毕' : '执行失败');
+    resBox.textContent = result || (success ? '执行完成' : '执行失败');
     body.appendChild(resBox);
 
     scrollToBottom();
   }
 
-  // 4. 更新界面控制状态
+  // 4. 状态同步更新
   function updateUiStatus(status) {
     currentStatus = status;
     statusBadge.className = `status-indicator status-${status}`;
@@ -304,7 +609,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       resumeIcon.classList.remove('hidden');
       pauseBtnText.textContent = '继续';
     } else if (status === 'completed') {
-      statusText.textContent = '已完成';
+      statusText.textContent = '完成';
       sendBtn.disabled = false;
       pauseResumeBtn.disabled = true;
       stopBtn.disabled = true;
@@ -323,7 +628,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // 5. 与后台 Service Worker 建立端口通信
+  // 5. 与后台 Service Worker 保持长连接
   let port = null;
 
   function connectToBackground() {
@@ -334,8 +639,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         case 'INIT_STATE':
           updateUiStatus(msg.status);
           if (msg.events && msg.events.length > 0) {
-            removeEmptyState();
-            // 重建历史日志
             for (const ev of msg.events) {
               handleEngineEvent(ev);
             }
@@ -364,6 +667,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           break;
 
         case 'modelThinkingEnd':
+          finishThinkingState();
           break;
 
         case 'toolCallStart':
@@ -389,26 +693,20 @@ document.addEventListener('DOMContentLoaded', async () => {
           break;
 
         case 'HISTORY_CLEARED':
-          streamContainer.innerHTML = `
-            <div id="empty-state" class="empty-state">
-              <div class="empty-icon-wrapper">
-                <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                  <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
-                  <line x1="8" y1="21" x2="16" y2="21"></line>
-                  <line x1="12" y1="17" x2="12" y2="21"></line>
-                </svg>
-              </div>
-              <p class="empty-title">网页自动化就绪</p>
-              <p class="empty-subtitle">在下方输入指令，助手将自主感知网页并执行点击、输入与导航</p>
-            </div>
-          `;
+          currentModelNode = null;
+          currentThoughtCard = null;
+          currentThoughtInner = null;
+          currentThoughtStatus = null;
+          currentThoughtHint = null;
+          currentDirectTextBox = null;
+          activeToolCards.clear();
+          streamContainer.innerHTML = '';
           updateUiStatus('idle');
           break;
       }
     });
 
     port.onDisconnect.addListener(() => {
-      // 端口断开后尝试重连
       setTimeout(connectToBackground, 1000);
     });
   }
@@ -422,6 +720,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       appendThoughtChunk(ev.text);
     } else if (ev.type === 'contentChunk') {
       appendContentChunk(ev.text);
+    } else if (ev.type === 'modelThinkingEnd') {
+      finishThinkingState();
     } else if (ev.type === 'complete') {
       appendContentChunk(`\n任务总结：${ev.summary}`);
     }
@@ -432,7 +732,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 6. 输入框自适应扩展与快捷键
   function autoResizeTextarea() {
     taskInput.style.height = 'auto';
-    taskInput.style.height = `${Math.min(taskInput.scrollHeight, 140)}px`;
+    const nextH = Math.min(taskInput.scrollHeight, 140);
+    taskInput.style.height = `${nextH}px`;
+    taskInput.style.overflowY = taskInput.scrollHeight > 140 ? 'auto' : 'hidden';
   }
 
   taskInput.addEventListener('input', autoResizeTextarea);
@@ -444,20 +746,30 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
-  // 7. 发送任务
+  // 7. 发送任务指令并重置会话节点引用
   async function triggerSendTask() {
     const goal = taskInput.value.trim();
     if (!goal) return;
 
+    currentModelNode = null;
+    currentThoughtCard = null;
+    currentThoughtInner = null;
+    currentThoughtStatus = null;
+    currentThoughtHint = null;
+    currentDirectTextBox = null;
+    activeToolCards.clear();
+
     appendUserMessage(goal);
     taskInput.value = '';
     taskInput.style.height = 'auto';
+    taskInput.style.overflowY = 'hidden';
 
+    const cp = getCurrentProvider();
     const currentConfig = {
       apiConfig: {
-        baseUrl: baseUrlInput.value.trim(),
-        apiKey: apiKeyInput.value.trim(),
-        model: modelInput.value.trim()
+        baseUrl: (cp.baseUrl || '').trim(),
+        apiKey: (cp.apiKey || '').trim(),
+        model: (cp.selectedModel || cp.models?.[0] || 'deepseek-chat').trim()
       },
       maxSteps: parseInt(maxStepsInput.value, 10) || 20,
       enableVision: visionToggle.checked,
@@ -488,9 +800,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   stopBtn.addEventListener('click', () => {
-    if (port) {
-      port.postMessage({ action: 'STOP_TASK' });
-    }
+    if (!port) return;
+    port.postMessage({ action: 'STOP_TASK' });
   });
 
   // 9. 清空历史

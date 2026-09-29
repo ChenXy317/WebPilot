@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WebAuto Harness</title>
+  <title>WebPilot</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -12,13 +12,13 @@
     <header class="harness-header">
       <div class="header-left">
         <div class="brand">
-          <span class="brand-title">WebAuto</span>
-          <span class="brand-tag">Harness</span>
+          <span class="brand-title">WebPilot</span>
         </div>
-        <div id="status-badge" class="status-indicator status-idle" title="当前状态">
+        <div id="status-badge" class="status-indicator status-idle" title="当前运行状态">
           <span class="indicator-dot"></span>
           <span class="indicator-text">就绪</span>
         </div>
+        <div id="active-model-tag" class="active-model-tag hidden" title="当前生效的供应商与模型"></div>
       </div>
 
       <div class="header-right">
@@ -42,14 +42,14 @@
           </svg>
         </button>
 
-        <button id="clear-history-btn" class="icon-button" title="清空对话" aria-label="清空对话">
+        <button id="clear-history-btn" class="icon-button" title="清空会话" aria-label="清空会话">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="3 6 5 6 21 6"></polyline>
             <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
           </svg>
         </button>
 
-        <button id="settings-toggle-btn" class="icon-button" title="设置" aria-label="配置">
+        <button id="settings-toggle-btn" class="icon-button" title="模型与接口配置" aria-label="配置">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="3"></circle>
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
@@ -65,15 +65,24 @@
         <button id="settings-close-btn" class="text-button">完成</button>
       </div>
       <div class="settings-body">
+        <!-- 供应商选择与管理 -->
         <div class="form-item">
-          <label for="provider-select">服务商预设</label>
+          <div class="form-item-header">
+            <label for="provider-select">供应商</label>
+            <div class="action-btn-inline-group">
+              <button type="button" id="add-provider-btn" class="sub-button-compact" title="新建供应商">+ 新建</button>
+              <button type="button" id="delete-provider-btn" class="sub-button-compact danger" title="删除当前供应商">删除</button>
+            </div>
+          </div>
           <select id="provider-select">
-            <option value="deepseek">DeepSeek 官方</option>
-            <option value="openai">OpenAI 官方</option>
-            <option value="siliconflow">硅基流动 SiliconFlow</option>
-            <option value="ollama">Ollama 本地运行</option>
-            <option value="custom">自定义服务商</option>
+            <!-- 动态渲染已保存的供应商列表 -->
           </select>
+        </div>
+
+        <!-- 供应商详细配置 -->
+        <div class="form-item">
+          <label for="provider-name-input">供应商名称</label>
+          <input type="text" id="provider-name-input" spellcheck="false" placeholder="例如：DeepSeek、我的代理" />
         </div>
 
         <div class="form-item">
@@ -89,11 +98,26 @@
           </div>
         </div>
 
-        <div class="form-row">
-          <div class="form-item flex-2">
-            <label for="model-input">模型名称</label>
-            <input type="text" id="model-input" spellcheck="false" placeholder="deepseek-chat" />
+        <!-- 当前供应商所属模型管理 -->
+        <div class="form-item">
+          <label for="model-select">生效模型</label>
+          <select id="model-select">
+            <!-- 动态渲染当前供应商下的模型选项 -->
+          </select>
+        </div>
+
+        <div class="form-item">
+          <label>管理该供应商下的模型列表</label>
+          <div class="input-with-button">
+            <input type="text" id="new-model-input" spellcheck="false" placeholder="输入模型名称，如 deepseek-chat" />
+            <button type="button" id="add-model-btn" class="sub-button">+ 添加</button>
           </div>
+          <div id="models-tags-container" class="models-tags-container">
+            <!-- 动态渲染模型标签与删除按钮 -->
+          </div>
+        </div>
+
+        <div class="form-row">
           <div class="form-item flex-1">
             <label for="max-steps-input">步数上限</label>
             <input type="number" id="max-steps-input" min="1" max="50" value="20" />
@@ -114,29 +138,17 @@
           </label>
         </div>
 
-        <button id="save-settings-btn" class="solid-button full-width">保存设置</button>
+        <button id="save-settings-btn" class="solid-button full-width">保存配置</button>
       </div>
     </div>
 
     <!-- 中部消息流主体 -->
-    <main id="conversation-stream" class="conversation-stream">
-      <div id="empty-state" class="empty-state">
-        <div class="empty-icon-wrapper">
-          <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
-            <line x1="8" y1="21" x2="16" y2="21"></line>
-            <line x1="12" y1="17" x2="12" y2="21"></line>
-          </svg>
-        </div>
-        <p class="empty-title">网页自动化就绪</p>
-        <p class="empty-subtitle">在下方输入指令，助手将自主感知网页并执行点击、输入与导航</p>
-      </div>
-    </main>
+    <main id="conversation-stream" class="conversation-stream"></main>
 
-    <!-- 底部固定输入栏 -->
+    <!-- 底部置底输入栏 -->
     <footer class="harness-footer">
       <div class="input-card">
-        <textarea id="task-input" rows="1" placeholder="输入自动化目标或操作需求... (Enter 发送, Shift+Enter 换行)"></textarea>
+        <textarea id="task-input" rows="1" placeholder="输入操作目标或任务... (Enter 发送)"></textarea>
 
         <div class="input-actions-bar">
           <div class="action-left-group">

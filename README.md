@@ -1,6 +1,6 @@
-# WebAuto (WebPilot) - 浏览器智能自动化助手
+# WebPilot - 浏览器智能自动化助手
 
-WebAuto 是一款基于 **Chrome Extension Manifest V3** 与 **OpenAI 兼容接口标准** 开发的网页自动化操作扩展。通过连接大语言模型的推理与工具调用（Tool Calling）能力，在用户真实的浏览器登录环境中，自主完成网页元素识别、文本提取、表单输入、点击交互与多步骤流程执行。
+WebPilot 是一款基于 **Chrome Extension Manifest V3** 与 **OpenAI 兼容接口标准** 开发的网页自动化操作扩展。通过连接大语言模型的推理与工具调用（Tool Calling）能力，在用户真实的浏览器登录环境中，自主完成网页元素识别、文本提取、表单输入、点击交互与多步骤流程执行。
 
 ---
 
@@ -38,9 +38,9 @@ WebAuto 是一款基于 **Chrome Extension Manifest V3** 与 **OpenAI 兼容接�
 ## 安装与快速上手
 
 ### 1. 加载扩展程序
-1. 打开 Chrome 浏览器，在地址栏输入并回车：
+1. 打开 Chrome / Edge 浏览器，在地址栏输入并回车：
    ```text
-   chrome://extensions
+   chrome://extensions  （或 edge://extensions）
    ```
 2. 打开页面右上角的 **“开发者模式” (Developer mode)** 开关。
 3. 点击左上角的 **“加载已解压的扩展程序” (Load unpacked)**。
@@ -48,18 +48,18 @@ WebAuto 是一款基于 **Chrome Extension Manifest V3** 与 **OpenAI 兼容接�
    ```text
    d:\Projects\WebPilot
    ```
-5. 加载完成后，浏览器工具栏将出现 **WebAuto** 图标。
+5. 加载完成后，浏览器工具栏将出现 **WebPilot** 图标。
 
 ### 2. 配置与开始使用
-1. 在浏览器右上角的扩展列表中，建议将 **WebAuto** 固定到工具栏。
+1. 在浏览器右上角的扩展列表中，建议将 **WebPilot** 固定到工具栏。
 2. 打开任意需要执行操作的网页（如商品页面、搜索网站、管理后台等）。
 3. 点击工具栏图标展开右侧常驻侧边栏。
 4. 点击侧边栏顶部的 **设置** 图标展开配置抽屉：
-   * **服务商预设**：支持快速选择 DeepSeek、OpenAI、硅基流动 (SiliconFlow)、Ollama（本地运行）或自定义接口；
-   * **API Base URL & Key**：填写您的大模型服务地址与 API 密钥；
-   * **模型名称**：填写支持 Function Calling 的模型（如 `deepseek-chat`、`gpt-4o`、`qwen2.5:latest` 等）；
+   * **供应商管理**：支持用户保存并自由切换多个供应商，可随时新增或删除供应商；
+   * **API Base URL & Key**：填写当前供应商的大模型服务地址与 API 密钥；
+   * **多模型管理**：一个供应商下支持配置多个模型，支持自由添加新模型标签、快速点击切换当前生效模型；
    * **功能选项**：根据需要勾选“启用视口截图多模态辅助”或“启用 CDP 硬件真实事件输入”；
-   * 点击 **保存设置**。
+   * 点击 **保存配置**。
 5. 在底部输入栏输入您的具体目标（如：“搜索人工智能最新新闻并总结前两篇文章的主要内容”），按回车即可启动自动化执行。
 
 ---
