@@ -76,39 +76,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     'enableCdp'
   ]);
 
-  let providers = stored.customProviders;
-  let activeProviderId = stored.activeProviderId;
+  let providers = Array.isArray(stored.customProviders) ? stored.customProviders : [];
+  let activeProviderId = stored.activeProviderId || null;
 
-  // 自动迁移或初始化初始供应商
-  if (!Array.isArray(providers) || providers.length === 0) {
-    if (stored.apiConfig && (stored.apiConfig.baseUrl || stored.apiConfig.apiKey)) {
-      const oldModel = (stored.apiConfig.model || 'deepseek-chat').trim();
-      providers = [
-        {
-          id: 'provider_default',
-          name: stored.apiConfig.provider ? stored.apiConfig.provider.toUpperCase() : '默认供应商',
-          baseUrl: stored.apiConfig.baseUrl || 'https://api.deepseek.com/v1',
-          apiKey: stored.apiConfig.apiKey || '',
-          models: [oldModel],
-          selectedModel: oldModel
-        }
-      ];
-    } else {
-      providers = [
-        {
-          id: 'provider_deepseek',
-          name: 'DeepSeek',
-          baseUrl: 'https://api.deepseek.com/v1',
-          apiKey: '',
-          models: ['deepseek-chat', 'deepseek-reasoner'],
-          selectedModel: 'deepseek-chat'
-        }
-      ];
-    }
-    activeProviderId = providers[0].id;
-  }
-
-  if (!activeProviderId || !providers.some((p) => p.id === activeProviderId)) {
+  // 严格遵循用户原则：未配置时绝不预设 DeepSeek，保持为空让用户自行填写配置
+  if (providers.length === 0) {
+    activeProviderId = null;
+  } else if (!activeProviderId || !providers.some((p) => p.id === activeProviderId)) {
     activeProviderId = providers[0].id;
   }
 
@@ -120,7 +94,8 @@ document.addEventListener('DOMContentLoaded', async () => {
    * 获取当前选中的供应商配置对象
    */
   function getCurrentProvider() {
-    return providers.find((p) => p.id === activeProviderId) || providers[0];
+    if (!providers || providers.length === 0) return null;
+    return providers.find((p) => p.id === activeProviderId) || providers[0] || null;
   }
 
   /**
@@ -128,10 +103,22 @@ document.addEventListener('DOMContentLoaded', async () => {
    */
   function renderProviderOptions() {
     providerSelect.innerHTML = '';
+    if (!providers || providers.length === 0) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '暂无供应商（请点击“+ 新建”）';
+      opt.disabled = true;
+      opt.selected = true;
+      providerSelect.appendChild(opt);
+      deleteProviderBtn.disabled = true;
+      return;
+    }
+
+    deleteProviderBtn.disabled = false;
     for (const p of providers) {
       const opt = document.createElement('option');
       opt.value = p.id;
-      opt.textContent = p.name || '未命名供应商';
+      opt.textContent = p.name ? p.name.trim() : '未命名供应商';
       if (p.id === activeProviderId) {
         opt.selected = true;
       }
@@ -144,11 +131,42 @@ document.addEventListener('DOMContentLoaded', async () => {
    */
   function renderModelControls(currentProvider) {
     modelSelect.innerHTML = '';
-    const models = Array.isArray(currentProvider.models) && currentProvider.models.length > 0
-      ? currentProvider.models
-      : ['deepseek-chat'];
+    modelsTagsContainer.innerHTML = '';
 
-    if (!models.includes(currentProvider.selectedModel)) {
+    if (!currentProvider) {
+      const emptyOpt = document.createElement('option');
+      emptyOpt.value = '';
+      emptyOpt.textContent = '暂无模型';
+      emptyOpt.disabled = true;
+      emptyOpt.selected = true;
+      modelSelect.appendChild(emptyOpt);
+
+      const hint = document.createElement('div');
+      hint.className = 'models-empty-hint';
+      hint.textContent = '请先新建供应商并添加可用模型';
+      modelsTagsContainer.appendChild(hint);
+      return;
+    }
+
+    const models = Array.isArray(currentProvider.models) ? currentProvider.models : [];
+
+    if (models.length === 0) {
+      currentProvider.selectedModel = '';
+      const emptyOpt = document.createElement('option');
+      emptyOpt.value = '';
+      emptyOpt.textContent = '暂无模型（请在下方添加）';
+      emptyOpt.disabled = true;
+      emptyOpt.selected = true;
+      modelSelect.appendChild(emptyOpt);
+
+      const hint = document.createElement('div');
+      hint.className = 'models-empty-hint';
+      hint.textContent = '暂无模型，请在上方输入模型名称并点击“+ 添加”';
+      modelsTagsContainer.appendChild(hint);
+      return;
+    }
+
+    if (!currentProvider.selectedModel || !models.includes(currentProvider.selectedModel)) {
       currentProvider.selectedModel = models[0];
     }
 
@@ -163,7 +181,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // 渲染管理标签列表
-    modelsTagsContainer.innerHTML = '';
     for (const m of models) {
       const tag = document.createElement('div');
       tag.className = `model-tag${m === currentProvider.selectedModel ? ' active' : ''}`;
@@ -184,12 +201,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       delBtn.title = '移除此模型';
       delBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (currentProvider.models.length <= 1) {
-          return;
-        }
         currentProvider.models = currentProvider.models.filter((item) => item !== m);
         if (currentProvider.selectedModel === m) {
-          currentProvider.selectedModel = currentProvider.models[0];
+          currentProvider.selectedModel = currentProvider.models.length > 0 ? currentProvider.models[0] : '';
         }
         renderModelControls(currentProvider);
         updateHeaderModelBadge();
@@ -206,12 +220,15 @@ document.addEventListener('DOMContentLoaded', async () => {
    */
   function updateHeaderModelBadge() {
     const cp = getCurrentProvider();
-    if (!cp) {
-      activeModelTag.classList.add('hidden');
+    if (!cp || !cp.name || !cp.selectedModel) {
+      activeModelTag.classList.remove('hidden');
+      activeModelTag.textContent = '未配置模型';
+      activeModelTag.title = '尚未配置生效模型，点击展开设置';
       return;
     }
     activeModelTag.classList.remove('hidden');
-    activeModelTag.textContent = `${cp.name} / ${cp.selectedModel || cp.models?.[0] || '默认'}`;
+    activeModelTag.textContent = `${cp.name.trim()} / ${cp.selectedModel.trim()}`;
+    activeModelTag.title = `当前生效：${cp.name.trim()} / ${cp.selectedModel.trim()}`;
   }
 
   /**
@@ -219,7 +236,14 @@ document.addEventListener('DOMContentLoaded', async () => {
    */
   function populateCurrentProviderFields() {
     const cp = getCurrentProvider();
-    if (!cp) return;
+    if (!cp) {
+      providerNameInput.value = '';
+      baseUrlInput.value = '';
+      apiKeyInput.value = '';
+      renderModelControls(null);
+      updateHeaderModelBadge();
+      return;
+    }
 
     providerNameInput.value = cp.name || '';
     baseUrlInput.value = cp.baseUrl || '';
@@ -267,11 +291,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (cp) cp.apiKey = e.target.value;
   });
 
-  // 新建供应商
+  // 新建供应商：不预填任何默认配置，完全保持空白让用户自行填写
   addProviderBtn.addEventListener('click', () => {
     const cur = getCurrentProvider();
     if (cur) {
-      cur.name = providerNameInput.value.trim() || '未命名供应商';
+      cur.name = providerNameInput.value.trim();
       cur.baseUrl = baseUrlInput.value.trim();
       cur.apiKey = apiKeyInput.value.trim();
     }
@@ -279,11 +303,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     const newId = `p_${Date.now()}`;
     const newProvider = {
       id: newId,
-      name: `新供应商 ${providers.length + 1}`,
-      baseUrl: 'https://api.openai.com/v1',
+      name: '',
+      baseUrl: '',
       apiKey: '',
-      models: ['gpt-4o'],
-      selectedModel: 'gpt-4o'
+      models: [],
+      selectedModel: ''
     };
 
     providers.push(newProvider);
@@ -291,16 +315,17 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     renderProviderOptions();
     populateCurrentProviderFields();
+    providerNameInput.focus();
   });
 
   // 删除当前供应商
   deleteProviderBtn.addEventListener('click', () => {
-    if (providers.length <= 1) {
+    if (!providers || providers.length === 0) {
       return;
     }
 
     providers = providers.filter((p) => p.id !== activeProviderId);
-    activeProviderId = providers[0].id;
+    activeProviderId = providers.length > 0 ? providers[0].id : null;
 
     renderProviderOptions();
     populateCurrentProviderFields();
@@ -385,7 +410,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       apiConfig: {
         baseUrl: (cp?.baseUrl || '').trim(),
         apiKey: (cp?.apiKey || '').trim(),
-        model: (cp?.selectedModel || cp?.models?.[0] || 'deepseek-chat').trim()
+        model: (cp?.selectedModel || cp?.models?.[0] || '').trim()
       },
       maxSteps,
       enableVision,
@@ -765,11 +790,24 @@ document.addEventListener('DOMContentLoaded', async () => {
     taskInput.style.overflowY = 'hidden';
 
     const cp = getCurrentProvider();
+    const effectiveBaseUrl = (cp?.baseUrl || '').trim();
+    const effectiveModel = (cp?.selectedModel || cp?.models?.[0] || '').trim();
+
+    if (!cp || !effectiveBaseUrl || !effectiveModel) {
+      settingsPanel.classList.remove('collapsed');
+      const tipDiv = document.createElement('div');
+      tipDiv.className = 'tool-result-box error stream-node';
+      tipDiv.textContent = '提示：尚未配置有效的 API Base URL 或生效模型，请先在上方设置抽屉中填写并保存配置。';
+      streamContainer.appendChild(tipDiv);
+      scrollToBottom();
+      return;
+    }
+
     const currentConfig = {
       apiConfig: {
-        baseUrl: (cp.baseUrl || '').trim(),
+        baseUrl: effectiveBaseUrl,
         apiKey: (cp.apiKey || '').trim(),
-        model: (cp.selectedModel || cp.models?.[0] || 'deepseek-chat').trim()
+        model: effectiveModel
       },
       maxSteps: parseInt(maxStepsInput.value, 10) || 20,
       enableVision: visionToggle.checked,
@@ -788,6 +826,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   sendBtn.addEventListener('click', triggerSendTask);
+
+  // 点击顶栏模型标签快速唤起设置抽屉
+  activeModelTag.addEventListener('click', () => {
+    settingsPanel.classList.toggle('collapsed');
+  });
 
   // 8. 暂停/恢复与停止控制
   pauseResumeBtn.addEventListener('click', () => {

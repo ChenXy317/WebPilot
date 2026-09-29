@@ -82,18 +82,18 @@
         <!-- 供应商详细配置 -->
         <div class="form-item">
           <label for="provider-name-input">供应商名称</label>
-          <input type="text" id="provider-name-input" spellcheck="false" placeholder="例如：DeepSeek、我的代理" />
+          <input type="text" id="provider-name-input" spellcheck="false" placeholder="例如：我的网关、自定义服务" />
         </div>
 
         <div class="form-item">
           <label for="base-url-input">API Base URL</label>
-          <input type="text" id="base-url-input" spellcheck="false" placeholder="https://api.deepseek.com/v1" />
+          <input type="text" id="base-url-input" spellcheck="false" placeholder="例如：https://api.openai.com/v1 或 http://127.0.0.1:8790/v1" />
         </div>
 
         <div class="form-item">
           <label for="api-key-input">API Key</label>
           <div class="input-with-button">
-            <input type="password" id="api-key-input" spellcheck="false" placeholder="sk-..." />
+            <input type="password" id="api-key-input" spellcheck="false" placeholder="例如：sk-...（本地免鉴权可留空）" />
             <button type="button" id="toggle-key-btn" class="sub-button">查看</button>
           </div>
         </div>
@@ -109,7 +109,7 @@
         <div class="form-item">
           <label>管理该供应商下的模型列表</label>
           <div class="input-with-button">
-            <input type="text" id="new-model-input" spellcheck="false" placeholder="输入模型名称，如 deepseek-chat" />
+            <input type="text" id="new-model-input" spellcheck="false" placeholder="输入模型名称后添加，如：gpt-4o、deepseek-chat" />
             <button type="button" id="add-model-btn" class="sub-button">+ 添加</button>
           </div>
           <div id="models-tags-container" class="models-tags-container">

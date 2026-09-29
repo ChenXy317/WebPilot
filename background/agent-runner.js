@@ -510,9 +510,12 @@ export class AgentRunner {
 
         await this.ensureContentScriptInjected(this.targetTabId);
 
-        // 页面感知
+        // 页面感知（纯文本模式不生成 DOM 角标，仅在开启多模态时按需临时标记）
         this.emit('log', { logType: 'scan', text: '正在感知分析当前网页结构...' });
-        const scanResponse = await chrome.tabs.sendMessage(this.targetTabId, { action: 'SCAN' });
+        const scanResponse = await chrome.tabs.sendMessage(this.targetTabId, {
+          action: 'SCAN',
+          showBadges: Boolean(this.enableVision)
+        });
         if (!scanResponse || !scanResponse.success) {
           throw new Error(scanResponse?.error || '网页 DOM 结构提取失败');
         }
@@ -577,6 +580,11 @@ export class AgentRunner {
               dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 65 });
             } catch (_) {}
           }
+
+          // 截图捕获完成后，立即清除视口临时角标，保持页面干净整洁
+          try {
+            await chrome.tabs.sendMessage(this.targetTabId, { action: 'CLEAR_MARKERS' });
+          } catch (_) {}
 
           if (dataUrl) {
             messagePayload = [

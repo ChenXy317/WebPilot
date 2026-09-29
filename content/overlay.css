@@ -18,21 +18,22 @@
   position: absolute !important;
   pointer-events: none !important;
   user-select: none !important;
-  background: #ff0055 !important;
+  background: rgba(18, 18, 21, 0.9) !important;
   color: #ffffff !important;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
   font-size: 11px !important;
-  font-weight: 800 !important;
+  font-weight: 700 !important;
   line-height: 1.1 !important;
   padding: 1px 4px !important;
   border-radius: 3px !important;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.8) !important;
+  border: 1px solid rgba(255, 255, 255, 0.6) !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4) !important;
   white-space: nowrap !important;
   transform: translate(-30%, -50%) !important;
   will-change: transform, left, top !important;
 }
 
 .webauto-highlight-active {
-  outline: 2px solid #ff0055 !important;
+  outline: 2px solid #18181b !important;
   outline-offset: 2px !important;
 }

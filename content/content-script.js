@@ -362,11 +362,12 @@
   }
 
   /**
-   * 扫描全页面并打上视口高对比度角标
+   * 扫描全页面并按需打上视口高对比度角标
+   * @param {boolean} [showBadges=false] 是否在 DOM 中渲染浮动角标（仅在视觉多模态截图时启用）
    */
-  function scanAndMarkElements() {
+  function scanAndMarkElements(showBadges = false) {
     clearAllMarkers();
-    const container = ensureMarkerContainer();
+    const container = showBadges ? ensureMarkerContainer() : null;
 
     const allNodes = collectAllElements(document);
     const candidateSet = new Set();
@@ -393,7 +394,7 @@
     ];
 
     for (const node of allNodes) {
-      if (container.contains(node)) continue;
+      if (container && container.contains(node)) continue;
 
       let isCandidate = false;
       for (const sel of interactiveSelectors) {
@@ -457,13 +458,16 @@
       const itemIndex = nextIndex++;
       const itemRef = computeElementRef(el);
 
-      // 创建固定视口浮动角标
-      const badge = document.createElement('div');
-      badge.className = 'webauto-highlight-badge';
-      badge.textContent = `${itemIndex}`;
-      badge.style.left = `${Math.round(rect.left)}px`;
-      badge.style.top = `${Math.round(rect.top)}px`;
-      container.appendChild(badge);
+      // 仅在明确请求渲染角标时创建固定视口浮动角标
+      let badge = null;
+      if (showBadges && container) {
+        badge = document.createElement('div');
+        badge.className = 'webauto-highlight-badge';
+        badge.textContent = `${itemIndex}`;
+        badge.style.left = `${Math.round(rect.left)}px`;
+        badge.style.top = `${Math.round(rect.top)}px`;
+        container.appendChild(badge);
+      }
 
       // 计算元素视口中心坐标（供 CDP 硬件级事件或视口定位）
       const centerX = Math.round(rect.left + rect.width / 2);
@@ -493,12 +497,14 @@
       });
     }
 
-    // 绑定视口滚动与尺寸监听以保持角标贴合
-    activeScrollListener = () => {
-      requestAnimationFrame(updateBadgePositions);
-    };
-    window.addEventListener('scroll', activeScrollListener, { passive: true, capture: true });
-    window.addEventListener('resize', activeScrollListener, { passive: true });
+    // 仅在开启角标时绑定视口滚动与尺寸监听以保持角标贴合
+    if (showBadges) {
+      activeScrollListener = () => {
+        requestAnimationFrame(updateBadgePositions);
+      };
+      window.addEventListener('scroll', activeScrollListener, { passive: true, capture: true });
+      window.addEventListener('resize', activeScrollListener, { passive: true });
+    }
 
     return {
       title: document.title,
@@ -794,7 +800,7 @@
             break;
 
           case 'SCAN':
-            const scanData = scanAndMarkElements();
+            const scanData = scanAndMarkElements(Boolean(request.showBadges));
             sendResponse({ success: true, data: scanData });
             break;
 
