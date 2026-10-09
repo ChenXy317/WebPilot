@@ -3,6 +3,8 @@
  * 维护后台长连接会话、供应商与多模型配置管理、明暗主题切换及结构化流式消息渲染
  */
 
+import { OpenAIClient } from '../lib/openai.js';
+
 document.addEventListener('DOMContentLoaded', async () => {
   // DOM 元素引用
   const streamContainer = document.getElementById('conversation-stream');
@@ -11,27 +13,36 @@ document.addEventListener('DOMContentLoaded', async () => {
   const stepBadge = document.getElementById('step-badge');
   const activeModelTag = document.getElementById('active-model-tag');
 
+  const harness = document.querySelector('.harness-layout');
   const themeToggleBtn = document.getElementById('theme-toggle-btn');
   const clearHistoryBtn = document.getElementById('clear-history-btn');
   const settingsToggleBtn = document.getElementById('settings-toggle-btn');
   const settingsCloseBtn = document.getElementById('settings-close-btn');
-  const settingsPanel = document.getElementById('settings-panel');
+  const settingsView = document.getElementById('settings-view');
+  const saveState = document.getElementById('save-state');
+  const settingsAlert = document.getElementById('settings-alert');
 
-  const providerSelect = document.getElementById('provider-select');
   const addProviderBtn = document.getElementById('add-provider-btn');
+  const addProviderEmptyBtn = document.getElementById('add-provider-empty');
   const deleteProviderBtn = document.getElementById('delete-provider-btn');
+  const providerEmpty = document.getElementById('provider-empty');
+  const picker = document.getElementById('picker');
+  const providerSelect = document.getElementById('provider-select');
+  const providerFields = document.getElementById('provider-fields');
   const providerNameInput = document.getElementById('provider-name-input');
   const baseUrlInput = document.getElementById('base-url-input');
   const apiKeyInput = document.getElementById('api-key-input');
   const toggleKeyBtn = document.getElementById('toggle-key-btn');
+  const modelScope = document.getElementById('model-scope');
   const modelSelect = document.getElementById('model-select');
+  const testModelBtn = document.getElementById('test-model-btn');
+  const modelTestResult = document.getElementById('model-test-result');
   const newModelInput = document.getElementById('new-model-input');
   const addModelBtn = document.getElementById('add-model-btn');
-  const modelsTagsContainer = document.getElementById('models-tags-container');
+  const removeModelBtn = document.getElementById('remove-model-btn');
   const maxStepsInput = document.getElementById('max-steps-input');
   const visionToggle = document.getElementById('vision-toggle');
   const cdpToggle = document.getElementById('cdp-toggle');
-  const saveSettingsBtn = document.getElementById('save-settings-btn');
 
   const taskInput = document.getElementById('task-input');
   const sendBtn = document.getElementById('send-btn');
@@ -78,8 +89,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   let providers = Array.isArray(stored.customProviders) ? stored.customProviders : [];
   let activeProviderId = stored.activeProviderId || null;
+  let providerSeq = 0;
+  let configReady = false;
+  let saveTimer = null;
+  let savedHintTimer = null;
+  let deleteArmed = false;
+  let deleteArmTimer = null;
+  let renderingPickers = false;
+  let testingModel = false;
+  let shownTestKey = '';
 
-  // 严格遵循用户原则：未配置时绝不预设 DeepSeek，保持为空让用户自行填写配置
   if (providers.length === 0) {
     activeProviderId = null;
   } else if (!activeProviderId || !providers.some((p) => p.id === activeProviderId)) {
@@ -87,339 +106,462 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   maxStepsInput.value = stored.maxSteps || 20;
-  visionToggle.checked = stored.enableVision || false;
-  cdpToggle.checked = stored.enableCdp || false;
+  visionToggle.checked = Boolean(stored.enableVision);
+  cdpToggle.checked = Boolean(stored.enableCdp);
 
   /**
-   * 获取当前选中的供应商配置对象
+   * 当前选中的供应商
    */
   function getCurrentProvider() {
-    if (!providers || providers.length === 0) return null;
+    if (!providers.length) return null;
     return providers.find((p) => p.id === activeProviderId) || providers[0] || null;
   }
 
-  /**
-   * 渲染供应商下拉选择项
-   */
-  function renderProviderOptions() {
-    providerSelect.innerHTML = '';
-    if (!providers || providers.length === 0) {
-      const opt = document.createElement('option');
-      opt.value = '';
-      opt.textContent = '暂无供应商（请点击“+ 新建”）';
-      opt.disabled = true;
-      opt.selected = true;
-      providerSelect.appendChild(opt);
-      deleteProviderBtn.disabled = true;
-      return;
-    }
+  function nextProviderId() {
+    providerSeq += 1;
+    return `p_${Date.now().toString(36)}_${providerSeq}`;
+  }
 
-    deleteProviderBtn.disabled = false;
-    for (const p of providers) {
-      const opt = document.createElement('option');
-      opt.value = p.id;
-      opt.textContent = p.name ? p.name.trim() : '未命名供应商';
-      if (p.id === activeProviderId) {
-        opt.selected = true;
-      }
-      providerSelect.appendChild(opt);
+  function clampSteps() {
+    let steps = parseInt(maxStepsInput.value, 10);
+    if (!Number.isFinite(steps)) steps = 20;
+    steps = Math.min(50, Math.max(1, steps));
+    maxStepsInput.value = String(steps);
+    return steps;
+  }
+
+  /**
+   * 把输入框内容写回当前供应商
+   */
+  function readFieldsInto(provider) {
+    if (!provider) return;
+    provider.name = providerNameInput.value.trim();
+    provider.baseUrl = baseUrlInput.value.trim();
+    provider.apiKey = apiKeyInput.value.trim();
+  }
+
+  /**
+   * 用供应商数据填充输入框；无供应商时清空
+   */
+  function writeFields(provider) {
+    providerNameInput.value = provider?.name || '';
+    baseUrlInput.value = provider?.baseUrl || '';
+    apiKeyInput.value = provider?.apiKey || '';
+  }
+
+  function resetDeleteArm() {
+    deleteArmed = false;
+    clearTimeout(deleteArmTimer);
+    deleteProviderBtn.textContent = '删除此供应商';
+  }
+
+  function showSaved(text) {
+    saveState.textContent = text;
+    clearTimeout(savedHintTimer);
+    if (text === '已保存') {
+      savedHintTimer = setTimeout(() => {
+        if (saveState.textContent === '已保存') saveState.textContent = '';
+      }, 1200);
     }
   }
 
   /**
-   * 渲染指定供应商下的模型选择与管理标签
+   * 将供应商、模型与运行选项写入本地存储
    */
-  function renderModelControls(currentProvider) {
-    modelSelect.innerHTML = '';
-    modelsTagsContainer.innerHTML = '';
-
-    if (!currentProvider) {
-      const emptyOpt = document.createElement('option');
-      emptyOpt.value = '';
-      emptyOpt.textContent = '暂无模型';
-      emptyOpt.disabled = true;
-      emptyOpt.selected = true;
-      modelSelect.appendChild(emptyOpt);
-
-      const hint = document.createElement('div');
-      hint.className = 'models-empty-hint';
-      hint.textContent = '请先新建供应商并添加可用模型';
-      modelsTagsContainer.appendChild(hint);
-      return;
-    }
-
-    const models = Array.isArray(currentProvider.models) ? currentProvider.models : [];
-
-    if (models.length === 0) {
-      currentProvider.selectedModel = '';
-      const emptyOpt = document.createElement('option');
-      emptyOpt.value = '';
-      emptyOpt.textContent = '暂无模型（请在下方添加）';
-      emptyOpt.disabled = true;
-      emptyOpt.selected = true;
-      modelSelect.appendChild(emptyOpt);
-
-      const hint = document.createElement('div');
-      hint.className = 'models-empty-hint';
-      hint.textContent = '暂无模型，请在上方输入模型名称并点击“+ 添加”';
-      modelsTagsContainer.appendChild(hint);
-      return;
-    }
-
-    if (!currentProvider.selectedModel || !models.includes(currentProvider.selectedModel)) {
-      currentProvider.selectedModel = models[0];
-    }
-
-    for (const m of models) {
-      const opt = document.createElement('option');
-      opt.value = m;
-      opt.textContent = m;
-      if (m === currentProvider.selectedModel) {
-        opt.selected = true;
-      }
-      modelSelect.appendChild(opt);
-    }
-
-    // 渲染管理标签列表
-    for (const m of models) {
-      const tag = document.createElement('div');
-      tag.className = `model-tag${m === currentProvider.selectedModel ? ' active' : ''}`;
-
-      const nameSpan = document.createElement('span');
-      nameSpan.textContent = m;
-      nameSpan.title = '点击设为当前生效模型';
-      nameSpan.addEventListener('click', () => {
-        currentProvider.selectedModel = m;
-        renderModelControls(currentProvider);
-        updateHeaderModelBadge();
+  async function persistNow() {
+    if (!configReady) return;
+    clearTimeout(saveTimer);
+    const provider = getCurrentProvider();
+    if (provider) readFieldsInto(provider);
+    try {
+      await chrome.storage.local.set({
+        customProviders: providers,
+        activeProviderId,
+        apiConfig: {
+          baseUrl: (provider?.baseUrl || '').trim(),
+          apiKey: (provider?.apiKey || '').trim(),
+          model: (provider?.selectedModel || '').trim()
+        },
+        maxSteps: clampSteps(),
+        enableVision: visionToggle.checked,
+        enableCdp: cdpToggle.checked
       });
-
-      const delBtn = document.createElement('button');
-      delBtn.type = 'button';
-      delBtn.className = 'model-tag-del-btn';
-      delBtn.textContent = '×';
-      delBtn.title = '移除此模型';
-      delBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        currentProvider.models = currentProvider.models.filter((item) => item !== m);
-        if (currentProvider.selectedModel === m) {
-          currentProvider.selectedModel = currentProvider.models.length > 0 ? currentProvider.models[0] : '';
-        }
-        renderModelControls(currentProvider);
-        updateHeaderModelBadge();
-      });
-
-      tag.appendChild(nameSpan);
-      tag.appendChild(delBtn);
-      modelsTagsContainer.appendChild(tag);
+      showSaved('已保存');
+      const readyToRun = Boolean((provider?.baseUrl || '').trim() && (provider?.selectedModel || '').trim());
+      if (readyToRun) showSettingsAlert('');
+    } catch (_) {
+      showSaved('未保存');
     }
   }
 
+  function schedulePersist() {
+    if (!configReady) return;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      persistNow();
+    }, 250);
+  }
+
   /**
-   * 同步更新顶栏模型指示标签
+   * 同步顶栏当前供应商与模型
    */
   function updateHeaderModelBadge() {
-    const cp = getCurrentProvider();
-    if (!cp || !cp.name || !cp.selectedModel) {
-      activeModelTag.classList.remove('hidden');
-      activeModelTag.textContent = '未配置模型';
-      activeModelTag.title = '尚未配置生效模型，点击展开设置';
+    const provider = getCurrentProvider();
+    activeModelTag.classList.remove('hidden');
+    if (!provider) {
+      activeModelTag.textContent = '未选择供应商';
+      activeModelTag.title = '尚未选择供应商';
       return;
     }
-    activeModelTag.classList.remove('hidden');
-    activeModelTag.textContent = `${cp.name.trim()} / ${cp.selectedModel.trim()}`;
-    activeModelTag.title = `当前生效：${cp.name.trim()} / ${cp.selectedModel.trim()}`;
+    const name = provider.name.trim() || '未命名';
+    if (!provider.selectedModel) {
+      activeModelTag.textContent = `${name} / 未选模型`;
+      activeModelTag.title = `${name} / 未选模型`;
+      return;
+    }
+    activeModelTag.textContent = `${name} / ${provider.selectedModel}`;
+    activeModelTag.title = `${name} / ${provider.selectedModel}`;
+  }
+
+  function providerLabel(provider) {
+    return provider?.name.trim() || '未命名供应商';
   }
 
   /**
-   * 填充当前供应商的输入框与关联模型
+   * 供应商下拉。模型下拉只列出当前供应商自己的模型。
    */
-  function populateCurrentProviderFields() {
-    const cp = getCurrentProvider();
-    if (!cp) {
-      providerNameInput.value = '';
-      baseUrlInput.value = '';
-      apiKeyInput.value = '';
-      renderModelControls(null);
-      updateHeaderModelBadge();
-      return;
+  function renderPickers() {
+    const provider = getCurrentProvider();
+    renderingPickers = true;
+    providerSelect.replaceChildren();
+    for (const item of providers) {
+      const option = document.createElement('option');
+      option.value = item.id;
+      option.textContent = providerLabel(item);
+      if (item.id === provider?.id) option.selected = true;
+      providerSelect.appendChild(option);
     }
 
-    providerNameInput.value = cp.name || '';
-    baseUrlInput.value = cp.baseUrl || '';
-    apiKeyInput.value = cp.apiKey || '';
-
-    renderModelControls(cp);
-    updateHeaderModelBadge();
-  }
-
-  // 初始化设置表单展示
-  renderProviderOptions();
-  populateCurrentProviderFields();
-
-  // 监听切换供应商
-  providerSelect.addEventListener('change', (e) => {
-    const prev = getCurrentProvider();
-    if (prev) {
-      prev.name = providerNameInput.value.trim() || '未命名供应商';
-      prev.baseUrl = baseUrlInput.value.trim();
-      prev.apiKey = apiKeyInput.value.trim();
+    modelSelect.replaceChildren();
+    const models = provider && Array.isArray(provider.models) ? provider.models : [];
+    if (provider && (!provider.selectedModel || !models.includes(provider.selectedModel))) {
+      provider.selectedModel = models[0] || '';
     }
-
-    activeProviderId = e.target.value;
-    populateCurrentProviderFields();
-  });
-
-  // 监听供应商名称实时更新
-  providerNameInput.addEventListener('input', (e) => {
-    const cp = getCurrentProvider();
-    if (cp) {
-      cp.name = e.target.value;
-      const opt = providerSelect.querySelector(`option[value="${cp.id}"]`);
-      if (opt) opt.textContent = cp.name || '未命名供应商';
-      updateHeaderModelBadge();
-    }
-  });
-
-  baseUrlInput.addEventListener('input', (e) => {
-    const cp = getCurrentProvider();
-    if (cp) cp.baseUrl = e.target.value;
-  });
-
-  apiKeyInput.addEventListener('input', (e) => {
-    const cp = getCurrentProvider();
-    if (cp) cp.apiKey = e.target.value;
-  });
-
-  // 新建供应商：不预填任何默认配置，完全保持空白让用户自行填写
-  addProviderBtn.addEventListener('click', () => {
-    const cur = getCurrentProvider();
-    if (cur) {
-      cur.name = providerNameInput.value.trim();
-      cur.baseUrl = baseUrlInput.value.trim();
-      cur.apiKey = apiKeyInput.value.trim();
-    }
-
-    const newId = `p_${Date.now()}`;
-    const newProvider = {
-      id: newId,
-      name: '',
-      baseUrl: '',
-      apiKey: '',
-      models: [],
-      selectedModel: ''
-    };
-
-    providers.push(newProvider);
-    activeProviderId = newId;
-
-    renderProviderOptions();
-    populateCurrentProviderFields();
-    providerNameInput.focus();
-  });
-
-  // 删除当前供应商
-  deleteProviderBtn.addEventListener('click', () => {
-    if (!providers || providers.length === 0) {
-      return;
-    }
-
-    providers = providers.filter((p) => p.id !== activeProviderId);
-    activeProviderId = providers.length > 0 ? providers[0].id : null;
-
-    renderProviderOptions();
-    populateCurrentProviderFields();
-  });
-
-  // 生效模型下拉框变更
-  modelSelect.addEventListener('change', (e) => {
-    const cp = getCurrentProvider();
-    if (cp) {
-      cp.selectedModel = e.target.value;
-      renderModelControls(cp);
-      updateHeaderModelBadge();
-    }
-  });
-
-  // 添加模型逻辑
-  function handleAddNewModel() {
-    const modelName = newModelInput.value.trim();
-    if (!modelName) return;
-
-    const cp = getCurrentProvider();
-    if (!cp) return;
-
-    if (!Array.isArray(cp.models)) {
-      cp.models = [];
-    }
-
-    if (!cp.models.includes(modelName)) {
-      cp.models.push(modelName);
-    }
-    cp.selectedModel = modelName;
-
-    newModelInput.value = '';
-    renderModelControls(cp);
-    updateHeaderModelBadge();
-  }
-
-  addModelBtn.addEventListener('click', handleAddNewModel);
-  newModelInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      handleAddNewModel();
-    }
-  });
-
-  // API Key 密码明暗查看
-  toggleKeyBtn.addEventListener('click', () => {
-    if (apiKeyInput.type === 'password') {
-      apiKeyInput.type = 'text';
-      toggleKeyBtn.textContent = '隐藏';
+    if (!models.length) {
+      const empty = document.createElement('option');
+      empty.value = '';
+      empty.textContent = '此供应商还没有模型';
+      empty.selected = true;
+      modelSelect.appendChild(empty);
+      modelSelect.disabled = true;
+      removeModelBtn.hidden = true;
     } else {
-      apiKeyInput.type = 'password';
-      toggleKeyBtn.textContent = '查看';
+      modelSelect.disabled = false;
+      for (const name of models) {
+        const option = document.createElement('option');
+        option.value = name;
+        option.textContent = name;
+        if (name === provider.selectedModel) option.selected = true;
+        modelSelect.appendChild(option);
+      }
+      removeModelBtn.hidden = false;
+    }
+    modelScope.textContent = provider ? `属于「${providerLabel(provider)}」` : '';
+    renderingPickers = false;
+    syncModelTestState(provider);
+  }
+
+  function modelTestKey(provider) {
+    return provider ? `${provider.id}\n${provider.selectedModel || ''}` : '';
+  }
+
+  function clearTestResult() {
+    modelTestResult.hidden = true;
+    modelTestResult.textContent = '';
+    modelTestResult.classList.remove('is-ok', 'is-error');
+  }
+
+  function showTestResult(text, state) {
+    modelTestResult.hidden = false;
+    modelTestResult.textContent = text;
+    modelTestResult.classList.toggle('is-ok', state === 'ok');
+    modelTestResult.classList.toggle('is-error', state === 'error');
+  }
+
+  /**
+   * 供应商或模型变化后，清掉上一次的测试结果
+   */
+  function syncModelTestState(provider) {
+    const nextKey = modelTestKey(provider);
+    if (nextKey !== shownTestKey) {
+      clearTestResult();
+      shownTestKey = nextKey;
+    }
+    if (!testingModel) {
+      testModelBtn.disabled = !provider?.selectedModel;
+    }
+  }
+
+  /**
+   * 先写入当前配置，再请求该供应商下选中的模型
+   */
+  async function testCurrentModel() {
+    const provider = getCurrentProvider();
+    if (!provider?.selectedModel || testingModel) return;
+    readFieldsInto(provider);
+    if (!provider.baseUrl.trim()) {
+      showTestResult('请先填写 API Base URL', 'error');
+      return;
+    }
+    await persistNow();
+    const testedId = provider.id;
+    const testedModel = provider.selectedModel;
+    testingModel = true;
+    testModelBtn.disabled = true;
+    testModelBtn.textContent = '测试中';
+    showTestResult('正在测试当前模型…', '');
+
+    const client = new OpenAIClient({
+      baseUrl: provider.baseUrl,
+      apiKey: provider.apiKey,
+      model: testedModel
+    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20000);
+    const stillCurrent = () => {
+      const current = getCurrentProvider();
+      return current?.id === testedId && current?.selectedModel === testedModel;
+    };
+    try {
+      const summary = await client.probeModel(controller.signal);
+      if (stillCurrent()) showTestResult(summary, 'ok');
+    } catch (err) {
+      if (!stillCurrent()) return;
+      const message = err?.name === 'AbortError' ? '测试超时，未收到模型响应' : (err.message || '测试失败');
+      showTestResult(message, 'error');
+    } finally {
+      clearTimeout(timer);
+      testingModel = false;
+      testModelBtn.textContent = '测试';
+      testModelBtn.disabled = !getCurrentProvider()?.selectedModel;
+    }
+  }
+
+  /**
+   * 未选择供应商时只保留新建入口，模型选择不单独出现
+   */
+  function paint() {
+    const hasProvider = Boolean(getCurrentProvider());
+    providerEmpty.hidden = hasProvider;
+    addProviderBtn.hidden = !hasProvider;
+    picker.hidden = !hasProvider;
+    providerFields.hidden = !hasProvider;
+    if (hasProvider) renderPickers();
+    updateHeaderModelBadge();
+  }
+
+  function selectProvider(id) {
+    if (id === activeProviderId) return;
+    readFieldsInto(getCurrentProvider());
+    activeProviderId = id;
+    writeFields(getCurrentProvider());
+    resetDeleteArm();
+    paint();
+    persistNow();
+  }
+
+  function selectModel(name) {
+    const provider = getCurrentProvider();
+    if (!provider || provider.selectedModel === name) return;
+    provider.selectedModel = name;
+    renderPickers();
+    updateHeaderModelBadge();
+    persistNow();
+  }
+
+  function removeModel(name) {
+    const provider = getCurrentProvider();
+    if (!provider) return;
+    provider.models = (provider.models || []).filter((item) => item !== name);
+    if (provider.selectedModel === name) {
+      provider.selectedModel = provider.models[0] || '';
+    }
+    renderPickers();
+    updateHeaderModelBadge();
+    persistNow();
+  }
+
+  /**
+   * 新建空白供应商。已有完全空白的供应商时改为选中它。
+   */
+  function createProvider() {
+    readFieldsInto(getCurrentProvider());
+    const blank = providers.find((provider) => (
+      !provider.name.trim()
+      && !provider.baseUrl.trim()
+      && !provider.apiKey.trim()
+      && (!provider.models || provider.models.length === 0)
+    ));
+    if (blank) {
+      activeProviderId = blank.id;
+      writeFields(blank);
+    } else {
+      const created = {
+        id: nextProviderId(),
+        name: '',
+        baseUrl: '',
+        apiKey: '',
+        models: [],
+        selectedModel: ''
+      };
+      providers.push(created);
+      activeProviderId = created.id;
+      writeFields(created);
+    }
+    resetDeleteArm();
+    paint();
+    persistNow();
+    providerNameInput.focus();
+  }
+
+  function addModel() {
+    const provider = getCurrentProvider();
+    const modelName = newModelInput.value.trim();
+    if (!provider || !modelName) {
+      if (provider) newModelInput.focus();
+      return;
+    }
+    readFieldsInto(provider);
+    if (!Array.isArray(provider.models)) provider.models = [];
+    if (!provider.models.includes(modelName)) provider.models.push(modelName);
+    provider.selectedModel = modelName;
+    newModelInput.value = '';
+    renderPickers();
+    updateHeaderModelBadge();
+    persistNow();
+    newModelInput.focus();
+  }
+
+  function removeCurrentProvider() {
+    if (!getCurrentProvider()) return;
+    providers = providers.filter((provider) => provider.id !== activeProviderId);
+    activeProviderId = providers[0]?.id || null;
+    writeFields(getCurrentProvider());
+    resetDeleteArm();
+    paint();
+    persistNow();
+  }
+
+  function showSettingsAlert(text) {
+    if (!text) {
+      settingsAlert.hidden = true;
+      settingsAlert.textContent = '';
+      return;
+    }
+    settingsAlert.hidden = false;
+    settingsAlert.textContent = text;
+    const scroller = settingsView.querySelector('.settings-scroll');
+    if (scroller) scroller.scrollTop = 0;
+  }
+
+  function setSettingsOpen(open) {
+    harness.classList.toggle('is-settings', open);
+    settingsView.hidden = !open;
+    settingsToggleBtn.classList.toggle('is-active', open);
+    settingsToggleBtn.setAttribute('aria-pressed', open ? 'true' : 'false');
+    if (!open) persistNow();
+  }
+
+  writeFields(getCurrentProvider());
+  paint();
+  configReady = true;
+
+  addProviderBtn.addEventListener('click', createProvider);
+  addProviderEmptyBtn.addEventListener('click', createProvider);
+
+  providerNameInput.addEventListener('input', () => {
+    const provider = getCurrentProvider();
+    if (!provider) return;
+    readFieldsInto(provider);
+    renderPickers();
+    updateHeaderModelBadge();
+    schedulePersist();
+  });
+
+  baseUrlInput.addEventListener('input', () => {
+    const provider = getCurrentProvider();
+    if (!provider) return;
+    readFieldsInto(provider);
+    schedulePersist();
+  });
+
+  apiKeyInput.addEventListener('input', () => {
+    const provider = getCurrentProvider();
+    if (!provider) return;
+    readFieldsInto(provider);
+    schedulePersist();
+  });
+
+  deleteProviderBtn.addEventListener('click', () => {
+    if (!getCurrentProvider()) return;
+    if (!deleteArmed) {
+      deleteArmed = true;
+      deleteProviderBtn.textContent = '确认删除';
+      deleteArmTimer = setTimeout(resetDeleteArm, 2500);
+      return;
+    }
+    removeCurrentProvider();
+  });
+
+  providerSelect.addEventListener('change', () => {
+    if (renderingPickers) return;
+    selectProvider(providerSelect.value);
+  });
+
+  modelSelect.addEventListener('change', () => {
+    if (renderingPickers) return;
+    selectModel(modelSelect.value);
+  });
+
+  removeModelBtn.addEventListener('click', () => {
+    const provider = getCurrentProvider();
+    if (!provider?.selectedModel) return;
+    removeModel(provider.selectedModel);
+  });
+
+  testModelBtn.addEventListener('click', () => {
+    testCurrentModel();
+  });
+
+  addModelBtn.addEventListener('click', addModel);
+  newModelInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      addModel();
     }
   });
 
-  // 设置面板展开与折叠控制
+  toggleKeyBtn.addEventListener('click', () => {
+    const visible = apiKeyInput.type === 'text';
+    apiKeyInput.type = visible ? 'password' : 'text';
+    toggleKeyBtn.textContent = visible ? '显示' : '隐藏';
+  });
+
+  function onRuntimeChange() {
+    clampSteps();
+    persistNow();
+  }
+
+  maxStepsInput.addEventListener('change', onRuntimeChange);
+  visionToggle.addEventListener('change', onRuntimeChange);
+  cdpToggle.addEventListener('change', onRuntimeChange);
+
   settingsToggleBtn.addEventListener('click', () => {
-    settingsPanel.classList.toggle('collapsed');
+    setSettingsOpen(settingsView.hidden);
   });
 
   settingsCloseBtn.addEventListener('click', () => {
-    settingsPanel.classList.add('collapsed');
-  });
-
-  // 保存设置按钮
-  saveSettingsBtn.addEventListener('click', async () => {
-    const cp = getCurrentProvider();
-    if (cp) {
-      cp.name = providerNameInput.value.trim() || '未命名供应商';
-      cp.baseUrl = baseUrlInput.value.trim();
-      cp.apiKey = apiKeyInput.value.trim();
-    }
-
-    const maxSteps = parseInt(maxStepsInput.value, 10) || 20;
-    const enableVision = visionToggle.checked;
-    const enableCdp = cdpToggle.checked;
-
-    await chrome.storage.local.set({
-      customProviders: providers,
-      activeProviderId: activeProviderId,
-      apiConfig: {
-        baseUrl: (cp?.baseUrl || '').trim(),
-        apiKey: (cp?.apiKey || '').trim(),
-        model: (cp?.selectedModel || cp?.models?.[0] || '').trim()
-      },
-      maxSteps,
-      enableVision,
-      enableCdp
-    });
-
-    renderProviderOptions();
-    populateCurrentProviderFields();
-    settingsPanel.classList.add('collapsed');
+    setSettingsOpen(false);
   });
 
   // 3. 消息流渲染与排版函数
@@ -794,14 +936,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     const effectiveModel = (cp?.selectedModel || cp?.models?.[0] || '').trim();
 
     if (!cp || !effectiveBaseUrl || !effectiveModel) {
-      settingsPanel.classList.remove('collapsed');
+      const tip = '请先选择供应商，再选择该供应商下的模型，并填写 API Base URL。';
+      setSettingsOpen(true);
+      showSettingsAlert(tip);
       const tipDiv = document.createElement('div');
       tipDiv.className = 'tool-result-box error stream-node';
-      tipDiv.textContent = '提示：尚未配置有效的 API Base URL 或生效模型，请先在上方设置抽屉中填写并保存配置。';
+      tipDiv.textContent = tip;
       streamContainer.appendChild(tipDiv);
       scrollToBottom();
       return;
     }
+    showSettingsAlert('');
 
     const currentConfig = {
       apiConfig: {
@@ -829,7 +974,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // 点击顶栏模型标签快速唤起设置抽屉
   activeModelTag.addEventListener('click', () => {
-    settingsPanel.classList.toggle('collapsed');
+    setSettingsOpen(settingsView.hidden);
   });
 
   // 8. 暂停/恢复与停止控制

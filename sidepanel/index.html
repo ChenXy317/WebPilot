@@ -58,89 +58,81 @@
       </div>
     </header>
 
-    <!-- 可折叠设置面板 -->
-    <div id="settings-panel" class="settings-drawer collapsed">
-      <div class="settings-header">
-        <span class="settings-title">模型与接口配置</span>
-        <button id="settings-close-btn" class="text-button">完成</button>
-      </div>
-      <div class="settings-body">
-        <!-- 供应商选择与管理 -->
-        <div class="form-item">
-          <div class="form-item-header">
-            <label for="provider-select">供应商</label>
-            <div class="action-btn-inline-group">
-              <button type="button" id="add-provider-btn" class="sub-button-compact" title="新建供应商">+ 新建</button>
-              <button type="button" id="delete-provider-btn" class="sub-button-compact danger" title="删除当前供应商">删除</button>
+    <!-- 配置页，占满顶栏以下区域 -->
+    <section id="settings-view" class="settings-view" hidden>
+      <div class="settings-scroll">
+        <div class="settings-top">
+          <h2 class="settings-top-title">配置</h2>
+          <span id="save-state" class="save-state" aria-live="polite"></span>
+          <button type="button" id="settings-close-btn" class="link-btn">关闭</button>
+        </div>
+        <p id="settings-alert" class="settings-alert" hidden></p>
+
+        <section class="settings-block">
+          <div class="block-title">
+            <span>选择</span>
+            <button type="button" id="add-provider-btn" class="link-btn" hidden>新建供应商</button>
+          </div>
+          <div id="provider-empty" class="settings-empty">
+            <p>还没有供应商</p>
+            <button type="button" id="add-provider-empty" class="primary-btn">新建供应商</button>
+          </div>
+          <div id="picker" hidden>
+            <label class="settings-label picker-label" for="provider-select">供应商</label>
+            <select id="provider-select"></select>
+            <div id="model-picker" class="model-picker">
+              <label class="settings-label" for="model-select">模型</label>
+              <p id="model-scope" class="field-hint"></p>
+              <div class="field-row">
+                <select id="model-select"></select>
+                <button type="button" id="test-model-btn" class="ghost-btn" disabled>测试</button>
+              </div>
+              <p id="model-test-result" class="model-test-result" hidden></p>
+              <div class="field-row model-add-row">
+                <input type="text" id="new-model-input" spellcheck="false" autocomplete="off" placeholder="添加到此供应商" />
+                <button type="button" id="add-model-btn" class="primary-btn">添加</button>
+              </div>
+              <button type="button" id="remove-model-btn" class="link-btn remove-model-btn" hidden>移除当前模型</button>
             </div>
           </div>
-          <select id="provider-select">
-            <!-- 动态渲染已保存的供应商列表 -->
-          </select>
-        </div>
+        </section>
 
-        <!-- 供应商详细配置 -->
-        <div class="form-item">
-          <label for="provider-name-input">供应商名称</label>
-          <input type="text" id="provider-name-input" spellcheck="false" placeholder="例如：我的网关、自定义服务" />
-        </div>
-
-        <div class="form-item">
-          <label for="base-url-input">API Base URL</label>
-          <input type="text" id="base-url-input" spellcheck="false" placeholder="例如：https://api.openai.com/v1 或 http://127.0.0.1:8790/v1" />
-        </div>
-
-        <div class="form-item">
-          <label for="api-key-input">API Key</label>
-          <div class="input-with-button">
-            <input type="password" id="api-key-input" spellcheck="false" placeholder="例如：sk-...（本地免鉴权可留空）" />
-            <button type="button" id="toggle-key-btn" class="sub-button">查看</button>
+        <section class="settings-block" id="provider-fields" hidden>
+          <div class="block-title">
+            <span>此供应商</span>
           </div>
-        </div>
-
-        <!-- 当前供应商所属模型管理 -->
-        <div class="form-item">
-          <label for="model-select">生效模型</label>
-          <select id="model-select">
-            <!-- 动态渲染当前供应商下的模型选项 -->
-          </select>
-        </div>
-
-        <div class="form-item">
-          <label>管理该供应商下的模型列表</label>
-          <div class="input-with-button">
-            <input type="text" id="new-model-input" spellcheck="false" placeholder="输入模型名称后添加，如：gpt-4o、deepseek-chat" />
-            <button type="button" id="add-model-btn" class="sub-button">+ 添加</button>
+          <label class="settings-label" for="provider-name-input">名称</label>
+          <input type="text" id="provider-name-input" spellcheck="false" autocomplete="off" placeholder="供应商名称" />
+          <label class="settings-label" for="base-url-input">API Base URL</label>
+          <input type="text" id="base-url-input" spellcheck="false" autocomplete="off" placeholder="https://api.openai.com/v1" />
+          <label class="settings-label" for="api-key-input">API Key</label>
+          <div class="field-row">
+            <input type="password" id="api-key-input" spellcheck="false" autocomplete="new-password" placeholder="本地服务可留空" />
+            <button type="button" id="toggle-key-btn" class="ghost-btn">显示</button>
           </div>
-          <div id="models-tags-container" class="models-tags-container">
-            <!-- 动态渲染模型标签与删除按钮 -->
-          </div>
-        </div>
+          <button type="button" id="delete-provider-btn" class="danger-btn">删除此供应商</button>
+        </section>
 
-        <div class="form-row">
-          <div class="form-item flex-1">
+        <section class="settings-block">
+          <div class="block-title">
+            <span>运行</span>
+          </div>
+          <div class="step-row">
             <label for="max-steps-input">步数上限</label>
             <input type="number" id="max-steps-input" min="1" max="50" value="20" />
           </div>
-        </div>
-
-        <div class="form-item-check">
-          <label class="checkbox-label">
-            <input type="checkbox" id="vision-toggle">
-            <span>启用视口截图多模态辅助</span>
+          <label class="check-row" title="把当前视口截图发给模型">
+            <input type="checkbox" id="vision-toggle" />
+            <span>视口截图</span>
           </label>
-        </div>
-
-        <div class="form-item-check">
-          <label class="checkbox-label">
-            <input type="checkbox" id="cdp-toggle">
-            <span>启用 CDP 硬件真实事件输入</span>
+          <label class="check-row" title="用系统级输入事件点击，而不是页面脚本模拟">
+            <input type="checkbox" id="cdp-toggle" />
+            <span>CDP 硬件事件</span>
           </label>
-        </div>
+        </section>
 
-        <button id="save-settings-btn" class="solid-button full-width">保存配置</button>
       </div>
-    </div>
+    </section>
 
     <!-- 中部消息流主体 -->
     <main id="conversation-stream" class="conversation-stream"></main>
